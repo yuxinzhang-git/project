@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+python-dotenv
+pydantic
+httpx
+playwright
+langchain
+langchain-openai
+langgraph

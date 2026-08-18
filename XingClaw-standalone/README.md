@@ -51,7 +51,7 @@
 python --version
 
 # 克隆项目后进入目录
-cd XingClaw
+cd XingClaw-standalone
 ```
 
 ### 2. 配置环境变量
@@ -103,7 +103,7 @@ pytest tests/ -v
 ## 项目结构一览
 
 ```
-XingClaw/
+XingClaw-standalone/
 ├── pyproject.toml              # 项目元数据、依赖、CLI 入口配置
 ├── .env.example                # 环境变量模板
 ├── dev.ps1 / dev.sh            # 本地开发启动脚本
@@ -205,4 +205,3 @@ flowchart TD
 3. **理解核心** → `docs/02_Agent编排内核/` —— 理解 Agent 怎么"思考"
 4. **看应用层** → `docs/03_编程Agent应用层/` —— 理解完整产品怎么搭建
 5. **最后看集成** → `docs/04_IM飞书桥接层/` —— 理解怎么对接外部平台
-

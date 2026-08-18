@@ -36,6 +36,7 @@ htmlcov/
 Thumbs.db
 
 # Runtime state
+.xingclaw/
 .xingclaw/sessions/
 .xingclaw/im/
 
@@ -46,3 +47,6 @@ Thumbs.db
 *.key
 
 TODOLIST/
+
+# Local Windows shortcuts
+*.lnk

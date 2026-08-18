@@ -1,20 +1,107 @@
-﻿# my-agent
+# my-agent
 
-`my-agent` is a FastAPI application with a layered browser automation module. The single local development server is:
+`my-agent` is a local FastAPI assistant application. It combines a small web UI, deterministic Chinese command parsing, LangChain-based chat/tools, runtime skill manifests, and a layered Playwright browser automation module.
 
-```powershell
-& .\agent\Scripts\python.exe agent_api.py
+It is designed as a local personal assistant and browser control workbench, not as a hosted multi-user service.
+
+## Features
+
+- Web UI served from `frontend/`
+- FastAPI API modules under `app/api/`
+- Calculator, weather, sports, billing, notes, money, and Xianyu task services
+- Browser automation facade under `app/browser/`
+- Site adapters for Bilibili, Taobao, and Xianyu
+- Runtime skill manifest loading from `skills/*/SKILL.md`
+- Deterministic smart-operation parser for supported Chinese commands
+
+## Project Structure
+
+```text
+my-agent/
+|-- agent_api.py              # Compatibility entry point for the FastAPI app
+|-- app/
+|   |-- main.py               # FastAPI app factory and static page routing
+|   |-- api/                  # HTTP route modules
+|   |-- browser/              # Playwright facade, site adapters, page objects
+|   |-- schemas/              # Pydantic request/response models
+|   |-- services/             # Business services
+|   `-- tools/                # LangChain tools
+|-- frontend/                 # Static HTML/JS pages
+|-- skills/                   # Runtime skill manifests
+|-- examples/                 # Local examples and smoke checks
+|-- scripts/                  # Helper scripts
+|-- package.json              # Node tooling for Playwright MCP
+`-- requirements.txt          # Python dependencies for the app
 ```
 
-Open the web interface at `http://127.0.0.1:8000`. Do not start additional
-Uvicorn instances on other ports when using the persistent browser profile.
+Runtime data such as browser profiles, screenshots, logs, local sessions, and virtual environments should stay out of Git.
 
-Run `start.bat` in a console window to start the service. Press `Ctrl+C` or
-close that window to stop the service and its project Browser session.
+## Requirements
 
-## Browser architecture
+- Python 3.12 is known to work; Python 3.10+ should be compatible with the app code.
+- Node.js is only needed for the optional Playwright MCP helper in `package.json`.
+- Microsoft Edge or a compatible Playwright browser is required for browser automation.
 
-All Playwright imports and calls are inside `app/browser/`. Business code uses the `Browser` facade, site adapters, page objects, and semantic components. `Browser` owns the persistent Edge session, navigation, basic interaction, state inspection, and screenshots.
+## Setup
+
+Create and activate a virtual environment from this directory:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+python -m pip install -r requirements.txt
+python -m playwright install
+```
+
+For optional Playwright MCP tooling:
+
+```powershell
+npm install
+```
+
+## Environment Variables
+
+Create a local `.env` file when you need model-backed chat or billing APIs:
+
+```text
+DEEPSEEK_API_KEY=your_key_here
+```
+
+Do not commit `.env` or real API keys.
+
+## Run
+
+Start the single local server:
+
+```powershell
+python agent_api.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
+The app uses one persistent browser session. Avoid starting multiple Uvicorn processes against the same browser profile.
+
+## Main API Areas
+
+```text
+GET  /api/status
+GET  /api/smart/capabilities
+GET  /api/skills
+GET  /api/skills/{name}/manifest
+GET  /api/skills/{name}
+POST /api/skills/reload
+```
+
+Additional routes live in `app/api/` for chat, daily tools, notes, money, browser operations, smart operations, and Xianyu tasks.
+
+## Browser Automation
+
+All Playwright imports and calls are isolated inside `app/browser/`. Business code uses the `Browser` facade, site adapters, page objects, and semantic components. `Browser` owns the persistent browser session, navigation, basic interaction, state inspection, and screenshots.
 
 `PageContext` is rebuilt from the current browser URL and title whenever an operation runs. It contains `site`, `page_type`, `url`, `title`, `keyword`, `channel_id`, `user_id`, and `current_video_id`, so manual browser navigation does not leave stale site state in the service.
 
@@ -24,63 +111,34 @@ Generic component contracts live in `app/browser/components/`:
 - `Player`: `play()`, `pause()`
 - `SearchBox`: `search(keyword)`
 
-Site-specific selectors remain inside the site components and page objects. They are not used by the service layer.
+Site-specific selectors remain inside site components and page objects.
 
-## Structured intents
+## Supported Commands
 
-The rule parser keeps `category` and returns a structured plan:
+The smart-operation parser keeps `category` and returns structured plans such as:
 
 ```json
 {"category":"page_action","target":"video","action":"play","index":3}
 ```
 
-Relative playback uses:
+Supported Chinese commands include examples such as `在哔哩哔哩搜索 Python 教程`, `打开第三个视频`, `播放下一个视频`, `打开淘宝`, `按销量排序`, and `返回搜索结果页`. These commands are deterministic and do not require a model API.
 
-```json
-{"category":"page_action","target":"video","action":"play","relative":1}
-```
+## Safety Boundaries
 
-Search uses:
+Taobao and Xianyu login pages, captcha pages, slider verification, and risk-control pages are reported as explicit errors. The automation does not bypass verification or authentication.
 
-```json
-{"category":"navigation","target":"search","action":"open","keyword":"Python 教程"}
-```
-
-Existing Chinese commands such as `在哔哩哔哩搜索 Python 教程`, `打开第三个视频`, `播放下一个视频`, `打开淘宝`, `按销量排序`, and `返回搜索结果页` remain supported. No model API is used; parsing is deterministic.
-
-## Sites
-
-### Bilibili
-
-Implemented under `app/browser/sites/bilibili/`: home, search, channel, favorites, back, video listing, opening and playing indexed videos, relative playback, and opening the current video. Compatibility methods such as `open_result()` and `play_result()` remain available.
-
-### Taobao
-
-Implemented under `app/browser/sites/taobao/`: home, keyword search, favorites navigation, back, product listing, opening an indexed product, sorting, and filtering. Taobao login pages, captcha/slider pages, and risk-control pages are detected and reported as explicit errors. The automation does not bypass verification.
-
-Capabilities are available at `GET /api/smart/capabilities` and are backed by the adapters' actual methods.
+Real website checks require network access and a usable browser session. A login or verification page is a valid test result.
 
 ## Verification
 
-Run Python compilation checks with:
+Run a syntax check:
 
 ```powershell
-& .\agent\Scripts\python.exe -m compileall -q app
+python -m compileall -q app
 ```
 
-Real website checks require network access and a usable Edge/Playwright session. A login or verification page is a valid test result and must remain visible as an explicit error.
+Run the browser smoke example only when a browser session and network access are available:
 
-
-
-## Runtime skills
-
-`my-agent` explicitly loads local skills at application startup from `skills/*/SKILL.md`, but only as manifests. The loader reads each file's YAML-style frontmatter, builds the skill list, and defers the full instruction body until a skill is actually requested.
-
-```text
-GET  /api/skills
-GET  /api/skills/{name}/manifest
-GET  /api/skills/{name}
-POST /api/skills/reload
+```powershell
+python examples/playwright_edge_smoke.py
 ```
-
-`GET /api/skills/{name}` loads the full `SKILL.md` content on demand. `GET /api/skills/{name}/manifest` stays metadata-only. The status endpoint also includes the current skill summaries.
