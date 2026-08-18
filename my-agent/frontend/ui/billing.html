@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>💳 账单 - syf_agent</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 700px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border-radius: 24px;
+            padding: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4);
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 30px;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .back-btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.7);
+            padding: 8px 16px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .back-btn:hover { background: rgba(255, 255, 255, 0.15); color: #fff; }
+
+        .header h1 {
+            color: #fff;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .header h1 span {
+            background: linear-gradient(45deg, #f093fb, #f5576c);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .refresh-btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.7);
+            padding: 8px 16px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .refresh-btn:hover { background: rgba(255, 255, 255, 0.15); color: #fff; }
+        .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .info-card {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 16px;
+            padding: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            margin-bottom: 20px;
+        }
+
+        .info-card-title {
+            color: rgba(255, 255, 255, 0.4);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 16px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .info-row:last-child { border-bottom: none; }
+
+        .info-label {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 14px;
+        }
+        .info-value {
+            color: #fff;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .info-value.key {
+            font-family: monospace;
+            color: #f093fb;
+        }
+        .info-value.balance {
+            color: #52b788;
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .info-value.error {
+            color: #ef4444;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        .loading .spinner {
+            width: 36px; height: 36px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #f093fb;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+        }
+
+        .stat-item {
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .stat-number {
+            color: #fff;
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 4px;
+        }
+        .stat-label {
+            color: rgba(255, 255, 255, 0.4);
+            font-size: 12px;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 20px;
+            color: rgba(255, 255, 255, 0.2);
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-left">
+                <a class="back-btn" href="/">← 返回主页</a>
+                <h1>💳 <span>账单</span></h1>
+            </div>
+            <button class="refresh-btn" id="refreshBtn" onclick="loadBilling()">🔄 刷新</button>
+        </div>
+
+        <div id="loadingView" class="loading">
+            <div class="spinner"></div>
+            <div>正在查询账单信息...</div>
+        </div>
+
+        <div id="contentView" style="display:none;">
+            <!-- API 信息 -->
+            <div class="info-card">
+                <div class="info-card-title">API 配置</div>
+                <div class="info-row">
+                    <span class="info-label">接口提供商</span>
+                    <span class="info-value" id="apiName">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">API 地址</span>
+                    <span class="info-value" id="baseUrl">-</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">API Key</span>
+                    <span class="info-value key" id="apiKey">-</span>
+                </div>
+            </div>
+
+            <!-- 余额信息 -->
+            <div class="info-card">
+                <div class="info-card-title">余额信息</div>
+                <div class="info-row">
+                    <span class="info-label">当前余额</span>
+                    <span class="info-value balance" id="balance">-</span>
+                </div>
+                <div id="balanceDetails"></div>
+            </div>
+
+            <!-- 快速链接 -->
+            <div class="info-card">
+                <div class="info-card-title">相关链接</div>
+                <div class="info-row">
+                    <span class="info-label">DeepSeek 控制台</span>
+                    <a class="info-value" href="https://platform.deepseek.com/usage" target="_blank" style="color: #667eea; text-decoration: none;">
+                        platform.deepseek.com/usage ↗
+                    </a>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">API 文档</span>
+                    <a class="info-value" href="https://platform.deepseek.com/api-docs" target="_blank" style="color: #667eea; text-decoration: none;">
+                        platform.deepseek.com/api-docs ↗
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <div id="errorView" class="loading" style="display:none;">
+            <div style="color: #ef4444; font-size: 18px;">⚠️</div>
+            <div style="color: rgba(255,255,255,0.6); margin-top: 12px;" id="errorMessage">查询失败</div>
+        </div>
+
+<div class="footer">syf_agent v1.0.0</div>
+    </div>
+
+    <script>
+        async function loadBilling() {
+            const loadingView = document.getElementById('loadingView');
+            const contentView = document.getElementById('contentView');
+            const errorView = document.getElementById('errorView');
+            const refreshBtn = document.getElementById('refreshBtn');
+
+            loadingView.style.display = 'block';
+            contentView.style.display = 'none';
+            errorView.style.display = 'none';
+            refreshBtn.disabled = true;
+
+            try {
+                const res = await fetch('/api/billing');
+                const data = await res.json();
+
+                // API 信息
+                document.getElementById('apiName').textContent = data.api_name || '-';
+                document.getElementById('baseUrl').textContent = data.base_url || '-';
+                document.getElementById('apiKey').textContent = data.api_key || '-';
+
+                // 余额信息
+                const balance = data.balance;
+                if (balance && !balance.error) {
+                    // DeepSeek 余额格式：{ balance_infos: [{ total_balance, granted_balance, topped_up_balance }] }
+                    if (balance.balance_infos && balance.balance_infos.length > 0) {
+                        const info = balance.balance_infos[0];
+                        const total = parseFloat(info.total_balance || 0).toFixed(4);
+                        document.getElementById('balance').textContent = `¥${total}`;
+
+                        let detailsHtml = '';
+                        if (info.topped_up_balance !== undefined) {
+                            detailsHtml += `
+                            <div class="info-row">
+                                <span class="info-label">账单</span>
+                                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                                    <a href="https://platform.deepseek.com/transactions" target="_blank" style="color:#667eea;font-size:12px;text-decoration:none;white-space:nowrap;">查看交易 ↗</a>
+                                </div>
+                            </div>`;
+                        }
+                        document.getElementById('balanceDetails').innerHTML = detailsHtml;
+                    } else if (balance.balance !== undefined) {
+                        document.getElementById('balance').textContent = `¥${parseFloat(balance.balance).toFixed(2)}`;
+                    } else {
+                        document.getElementById('balance').textContent = JSON.stringify(balance);
+                    }
+                } else {
+                    document.getElementById('balance').textContent = '查询失败';
+                    const errMsg = balance ? (balance.error || '未知错误') : '无法获取余额信息';
+                    document.getElementById('balanceDetails').innerHTML = `
+                        <div class="info-row">
+                            <span class="info-label error">${errMsg}</span>
+                        </div>`;
+                }
+
+                loadingView.style.display = 'none';
+                contentView.style.display = 'block';
+
+            } catch (e) {
+                loadingView.style.display = 'none';
+                errorView.style.display = 'block';
+                document.getElementById('errorMessage').textContent = `连接后端失败：${e.message}`;
+            }
+
+            refreshBtn.disabled = false;
+        }
+
+        // 页面加载后自动查询
+        loadBilling();
+    </script>
+</body>
+</html>

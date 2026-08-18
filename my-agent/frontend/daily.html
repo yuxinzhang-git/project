@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>日常</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0b0b1a;min-height:100vh;overflow-x:hidden;color:#fff}
+#app{max-width:960px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column;padding:0 16px}
+.home-header{display:flex;align-items:center;justify-content:space-between;padding:52px 4px 24px}
+.home-header h1{font-size:34px;font-weight:700;background:linear-gradient(135deg,#a78bfa,#6ee7b7);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.home-header .actions{display:flex;gap:8px}
+.back-link{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);color:#ccc;padding:6px 14px;border-radius:20px;font-size:13px;cursor:pointer;transition:.2s;text-decoration:none}
+.back-link:hover{background:rgba(255,255,255,0.15);color:#fff}
+#edit-btn{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);color:#ccc;padding:6px 16px;border-radius:20px;font-size:14px;cursor:pointer;transition:.2s}
+#edit-btn:hover{background:rgba(255,255,255,0.15);color:#fff}
+#edit-btn.editing{background:#ef4444;border-color:#ef4444;color:#fff}
+.app-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;padding:8px 0 24px}
+.app-card{display:flex;flex-direction:column;align-items:center;gap:8px;padding:16px 8px 12px;border-radius:16px;background:rgba(255,255,255,0.04);cursor:pointer;transition:.25s;position:relative;user-select:none}
+.app-card:active{transform:scale(0.93)}
+.app-card .icon-w{width:56px;height:56px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-size:28px}
+.app-card .name{font-size:13px;color:rgba(255,255,255,0.8);font-weight:500}
+.app-card .remove-badge{position:absolute;top:-4px;left:-4px;width:24px;height:24px;border-radius:50%;background:#ef4444;color:#fff;display:none;align-items:center;justify-content:center;font-size:16px;font-weight:700;z-index:2;box-shadow:0 2px 8px rgba(239,68,68,0.5)}
+.editing .app-card{animation:shake .4s ease-in-out infinite alternate}
+.editing .app-card .remove-badge{display:flex}
+@keyframes shake{0%{transform:rotate(-1deg)}100%{transform:rotate(1deg)}}
+.editing .app-card:nth-child(odd){animation-duration:.35s}
+.editing .app-card:nth-child(even){animation-duration:.45s}
+.hidden-section{padding:24px 4px;border-top:1px solid rgba(255,255,255,0.06);display:none}
+.editing .hidden-section{display:block}
+.hidden-section h3{font-size:14px;color:rgba(255,255,255,0.35);font-weight:500;margin-bottom:12px}
+.hide-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.hide-grid .app-card{opacity:.3;border:1px dashed rgba(255,255,255,0.15)}
+.hide-grid .app-card .add-badge{position:absolute;top:-4px;right:-4px;width:24px;height:24px;border-radius:50%;background:#22c55e;color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;z-index:2;box-shadow:0 2px 8px rgba(34,197,94,0.5)}
+.placeholder-tip{grid-column:1/-1;text-align:center;padding:20px;color:rgba(255,255,255,0.15);font-size:13px}
+</style>
+</head>
+<body>
+<div id="app">
+<div class="home-header">
+<h1>日常</h1>
+<div class="actions">
+<a class="back-link" href="/">← 返回</a>
+<button id="edit-btn">管理</button>
+</div>
+</div>
+<div class="app-grid" id="app-grid"></div>
+<div class="hidden-section" id="hidden-section">
+<h3>已隐藏的功能</h3>
+<div class="hide-grid" id="hide-grid"></div>
+</div>
+</div>
+<script>
+var APPS=[
+{id:"weather",name:"天气",icon:"🌤️",color:"linear-gradient(135deg,#4facfe,#00f2fe)",url:"/weather.html"},
+{id:"calculator",name:"计算器",icon:"🧮",color:"linear-gradient(135deg,#667eea,#764ba2)",url:"/calculator.html"},
+{id:"sports",name:"体育",icon:"🏀",color:"linear-gradient(135deg,#f093fb,#f5576c)",url:"/sports.html"},
+{id:"billing",name:"账单",icon:"📊",color:"linear-gradient(135deg,#52b788,#40916c)",url:"/billing.html"}
+];
+APPS.push({id:"stocks",name:"股票",icon:"股",color:"linear-gradient(135deg,#f59e0b,#ef4444)",url:"/stock.html"});
+var DEF=["weather","calculator","sports","billing","stocks"];
+var SK="syf_daily_apps";
+var active=[],editing=false;
+var grid=document.getElementById("app-grid");
+var hgrid=document.getElementById("hide-grid");
+var ebtn=document.getElementById("edit-btn");
+var hsec=document.getElementById("hidden-section");
+function load(){try{var s=localStorage.getItem(SK);if(s){var p=JSON.parse(s);if(Array.isArray(p)&&p.length){active=p;if(!active.includes("stocks")){active.push("stocks");save()}return}}}catch(e){}active=[].concat(DEF)}
+function save(){try{localStorage.setItem(SK,JSON.stringify(active))}catch(e){}}
+function toggle(id){var i=active.indexOf(id);if(i>=0)active.splice(i,1);else active.push(id);save();render()}
+function card(app,a){
+var c=document.createElement("div");c.className="app-card";
+if(a){
+c.innerHTML='<div class="remove-badge">&minus;</div><div class="icon-w" style="background:'+app.color+'">'+app.icon+'</div><div class="name">'+app.name+'</div>';
+c.querySelector(".remove-badge").onclick=function(e){e.stopPropagation();toggle(app.id)};
+c.onclick=function(){if(!editing)window.location.href=app.url};
+}else{
+c.innerHTML='<div class="add-badge">+</div><div class="icon-w" style="background:'+app.color+';opacity:0.5">'+app.icon+'</div><div class="name">'+app.name+'</div>';
+c.querySelector(".add-badge").onclick=function(e){e.stopPropagation();toggle(app.id)};
+}
+return c}
+function render(){
+grid.innerHTML="";hgrid.innerHTML="";var h=[];
+APPS.forEach(function(a){if(active.includes(a.id))grid.appendChild(card(a,1));else h.push(a)});
+if(h.length){h.forEach(function(a){hgrid.appendChild(card(a,0))})}else{hgrid.innerHTML='<div class="placeholder-tip">所有功能已添加</div>'}
+}
+ebtn.onclick=function(){editing=!editing;ebtn.textContent=editing?"完成":"管理";ebtn.classList.toggle("editing",editing);document.getElementById("app").classList.toggle("editing",editing)};
+load();render();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Site Adapter Development"
+  short_description: "Build layered website adapters consistently"
+  default_prompt: "Use $site-adapter-development to implement and verify a new website adapter in this project."

@@ -1,0 +1,5 @@
+[mcp_servers.playwright]
+command = "D:\\agent\\my-agent\\.tools\\node\\node.exe"
+args = ["D:\\agent\\my-agent\\node_modules\\@playwright\\mcp\\cli.js", "--browser", "msedge", "--headless"]
+startup_timeout_sec = 30
+

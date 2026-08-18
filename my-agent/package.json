@@ -1,0 +1,16 @@
+{
+  "name": "my-agent",
+  "version": "1.0.0",
+  "description": "一个基于 FastAPI 和 LangChain 的 AI 智能助手，集成了 AI 计算对话、天气查询、NBA 赛果、API 账单等功能。",
+  "main": "money.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/mcp": "^0.0.78"
+  }
+}

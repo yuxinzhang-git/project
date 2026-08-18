@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.py[cod]
+node_modules/
+.tools/
+data/browser/profile/
+data/browser/screenshots/
+data/money/state.json
+data/money/artifacts/
