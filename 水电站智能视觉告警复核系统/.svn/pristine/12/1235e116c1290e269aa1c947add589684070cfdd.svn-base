@@ -1,0 +1,359 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from decimal import Decimal
+
+import json
+from xsdata.models.datatype import XmlDateTime
+
+
+@dataclass(kw_only=True)
+class AbsoluteHigh:
+    elevation: Decimal = field(
+        metadata={
+            "type": "Element",
+        }
+    )
+    azimuth: Decimal = field(
+        metadata={
+            "type": "Element",
+        }
+    )
+    absolute_zoom: Decimal = field(
+        metadata={
+            "name": "absoluteZoom",
+            "type": "Element",
+        }
+    )
+
+
+@dataclass(kw_only=True)
+class RegionCoordinates:
+    position_x: int = field(
+        metadata={
+            "name": "positionX",
+            "type": "Element",
+        }
+    )
+    position_y: int = field(
+        metadata={
+            "name": "positionY",
+            "type": "Element",
+        }
+    )
+
+
+@dataclass(kw_only=True)
+class ThermalBackgroundImageResolution:
+    height: int = field(
+        metadata={
+            "type": "Element",
+        }
+    )
+    width: int = field(
+        metadata={
+            "type": "Element",
+        }
+    )
+
+
+@dataclass(kw_only=True)
+class ThermalImage:
+    resources_content_type: str = field(
+        metadata={
+            "name": "resourcesContentType",
+            "type": "Element",
+        }
+    )
+    resources_content: str = field(
+        metadata={
+            "name": "resourcesContent",
+            "type": "Element",
+        }
+    )
+
+
+@dataclass(kw_only=True)
+class VisibleLightBackgroundImageResolution:
+    height: int = field(
+        metadata={
+            "type": "Element",
+        }
+    )
+    width: int = field(
+        metadata={
+            "type": "Element",
+        }
+    )
+
+
+@dataclass(kw_only=True)
+class VisibleLightImage:
+    resources_content_type: str = field(
+        metadata={
+            "name": "resourcesContentType",
+            "type": "Element",
+        }
+    )
+    resources_content: str = field(
+        metadata={
+            "name": "resourcesContent",
+            "type": "Element",
+        }
+    )
+
+
+@dataclass(kw_only=True)
+class MaximumTemperaturePoint:
+    class Meta:
+        namespace = "http://www.isapi.org/ver20/XMLSchema"
+
+    region_coordinates: RegionCoordinates = field(
+        metadata={
+            "name": "RegionCoordinates",
+            "type": "Element",
+        }
+    )
+
+
+@dataclass(kw_only=True)
+class RegionCoordinatesList:
+    region_coordinates: list[RegionCoordinates] = field(
+        default_factory=list,
+        metadata={
+            "name": "RegionCoordinates",
+            "type": "Element",
+            "min_occurs": 1,
+        },
+    )
+
+
+@dataclass(kw_only=True)
+class Tmpa:
+    thermometry_unit: str = field(
+        metadata={
+            "name": "thermometryUnit",
+            "type": "Element",
+        }
+    )
+    rule_temperature: float = field(
+        metadata={
+            "name": "ruleTemperature",
+            "type": "Element",
+        }
+    )
+    curr_temperature: float = field(
+        metadata={
+            "name": "currTemperature",
+            "type": "Element",
+        }
+    )
+    rule_calib_type: str = field(
+        metadata={
+            "name": "ruleCalibType",
+            "type": "Element",
+        }
+    )
+    rule_type: str = field(
+        metadata={
+            "name": "ruleType",
+            "type": "Element",
+        }
+    )
+    maximum_temperature_point: MaximumTemperaturePoint = field(
+        metadata={
+            "name": "MaximumTemperaturePoint",
+            "type": "Element",
+        }
+    )
+    absolute_high: AbsoluteHigh = field(
+        metadata={
+            "name": "AbsoluteHigh",
+            "type": "Element",
+        }
+    )
+    preset_no: int = field(
+        metadata={
+            "name": "presetNo",
+            "type": "Element",
+        }
+    )
+    alarm_rule_temperature: float = field(
+        metadata={
+            "name": "alarmRuleTemperature",
+            "type": "Element",
+        }
+    )
+
+
+@dataclass(kw_only=True)
+class DetectionRegionEntry:
+    class Meta:
+        namespace = "http://www.isapi.org/ver20/XMLSchema"
+
+    region_id: int = field(
+        metadata={
+            "name": "regionID",
+            "type": "Element",
+        }
+    )
+    region_coordinates_list: RegionCoordinatesList = field(
+        metadata={
+            "name": "RegionCoordinatesList",
+            "type": "Element",
+        }
+    )
+    tmpa: Tmpa = field(
+        metadata={
+            "name": "TMPA",
+            "type": "Element",
+        }
+    )
+
+
+@dataclass(kw_only=True)
+class DetectionRegionList:
+    detection_region_entry: DetectionRegionEntry = field(
+        metadata={
+            "name": "DetectionRegionEntry",
+            "type": "Element",
+        }
+    )
+
+
+@dataclass(kw_only=True)
+class EventNotificationAlert:
+    class Meta:
+        namespace = "http://www.isapi.org/ver20/XMLSchema"
+
+    version: float = field(
+        metadata={
+            "type": "Attribute",
+        }
+    )
+    ip_address: str = field(
+        metadata={
+            "name": "ipAddress",
+            "type": "Element",
+        }
+    )
+    port_no: int = field(
+        metadata={
+            "name": "portNo",
+            "type": "Element",
+        }
+    )
+    protocol: str = field(
+        metadata={
+            "type": "Element",
+        }
+    )
+    mac_address: str = field(
+        metadata={
+            "name": "macAddress",
+            "type": "Element",
+        }
+    )
+    channel_id: int = field(
+        metadata={
+            "name": "channelID",
+            "type": "Element",
+        }
+    )
+    date_time: str = field(
+        metadata={
+            "name": "dateTime",
+            "type": "Element",
+        }
+    )
+    active_post_count: int = field(
+        metadata={
+            "name": "activePostCount",
+            "type": "Element",
+        }
+    )
+    event_type: str = field(
+        metadata={
+            "name": "eventType",
+            "type": "Element",
+        }
+    )
+    event_state: str = field(
+        metadata={
+            "name": "eventState",
+            "type": "Element",
+        }
+    )
+    event_description: str = field(
+        metadata={
+            "name": "eventDescription",
+            "type": "Element",
+        }
+    )
+    detection_region_list: DetectionRegionList = field(
+        metadata={
+            "name": "DetectionRegionList",
+            "type": "Element",
+        }
+    )
+    channel_name: str = field(
+        metadata={
+            "name": "channelName",
+            "type": "Element",
+        }
+    )
+    detection_pictures_number: int = field(
+        metadata={
+            "name": "detectionPicturesNumber",
+            "type": "Element",
+        }
+    )
+    urlcertification_type: str = field(
+        metadata={
+            "name": "URLCertificationType",
+            "type": "Element",
+        }
+    )
+    visible_light_image: VisibleLightImage = field(
+        metadata={
+            "name": "visibleLightImage",
+            "type": "Element",
+        }
+    )
+    visible_light_background_image_resolution: VisibleLightBackgroundImageResolution = field(
+        metadata={
+            "name": "visibleLightBackgroundImageResolution",
+            "type": "Element",
+        }
+    )
+    thermal_image: ThermalImage = field(
+        metadata={
+            "name": "thermalImage",
+            "type": "Element",
+        }
+    )
+    thermal_background_image_resolution: ThermalBackgroundImageResolution = (
+        field(
+            metadata={
+                "name": "thermalBackgroundImageResolution",
+                "type": "Element",
+            }
+        )
+    )
+
+
+if __name__ == "__main__":
+    from xsdata.formats.dataclass.parsers import XmlParser
+
+    parser = XmlParser()
+    with open("Y:\\alarm_body2026_05_22_11_10_51.txt", "r", encoding="utf-8") as f:
+        xml_content = f.read()
+
+    event = parser.from_string(xml_content, EventNotificationAlert)
+
+    print(event.ip_address)
+    print(event.detection_region_list.detection_region_entry.tmpa.curr_temperature)
+    print(event.visible_light_image.resources_content)
+
+    print(event)
+    print(json.dumps(event))

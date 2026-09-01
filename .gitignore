@@ -75,3 +75,8 @@ Thumbs.db
 
 # Local Windows shortcuts
 *.lnk
+
+*.mp4
+*.avi
+*.mov
+*.mkv

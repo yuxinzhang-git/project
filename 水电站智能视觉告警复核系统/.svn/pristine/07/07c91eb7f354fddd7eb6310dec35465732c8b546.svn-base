@@ -1,0 +1,1381 @@
+import uuid
+import cv2
+import numpy as np
+from collections import deque
+import requests
+from collections import defaultdict
+import sys, base64, time
+from ffmpeg import Ffmpeg
+from tracker import Tracker
+import asyncio
+import datetime
+import os
+import logging
+from speed import CustomSpeedEstimator
+from osd import get_osd_region, calculate_mse, SIMILARITY_THRESHOLD
+
+logger = logging.getLogger(__name__)
+output_folder = "detected_images"
+def get_image_dimensions_from_base64(base64_string):
+   
+        try:
+            # 1. 解码 base64 字符串
+            img_bytes = base64.b64decode(base64_string)
+
+            # 2. 将字节数据转换为 NumPy 数组
+            nparr = np.frombuffer(img_bytes, np.uint8)
+
+            # 3. 使用 OpenCV 解码图像
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            # 如果解码失败，img 将为 None
+            if img is None:
+                logger.error("错误：无法解码图像。")
+                return None, None
+
+            # 4. 获取图像的尺寸
+            # img.shape 返回 (height, width, channels)
+            height, width, _ = img.shape
+
+            return width, height
+
+        except Exception as e:
+            logger.error(f"处理过程中发生错误: {e}")
+            return None, None
+
+class Scene:
+    def __init__(self, detect_url='', track_url='',fire_url=''):
+        """
+        初始化场景，管理全局信息和分析。
+       
+        """
+        
+       
+        self.detect_url = detect_url
+        self.track_url = track_url
+        self.fire_url = fire_url
+        
+        self.frame_width = 0
+        self.frame_height = 0
+        
+        
+        # 道路识别模块
+        self.road_mask = None
+        self.road_polygons = None # 存储传入的归一化多边形坐标 
+        
+        self.POSITION_TOLERANCE = 10                     # 停车检测的像素容差
+        self.STATIONARY_THRESHOLD = 4                    # 停车检测的帧数阈值
+        self._tracker=Tracker(track_url)
+        
+        # OSD 检测相关属性
+        self.enable_osd_check = True  # 默认不启用 OSD 检测
+        self.previous_osd_region = None  # 存储上一帧的 OSD 区域
+        
+        # 停车图像验证相关属性
+        self.parking_similarity_threshold = 0.70  # 图像相似度阈值（使用OpenCV多种方法综合计算，0-1之间，越接近1越相似）
+
+        # 拥堵检测相关属性
+        # self.LOW_SPEED_THRESHOLD = 5  # 低速阈值，单位为像素/帧
+        # self.MIN_CARS_FOR_CONGESTION = 4 # 触发拥堵检测的最小车辆数
+        # self.MIN_TRAJECTORY_LENGTH = 3  # 计算速度所需的最小轨迹长度
+
+        self.CONGESTION_THRESHOLD = 0.3  # 默认拥堵阈值 (可调整)
+        self.MIN_CARS_FOR_CONGESTION = 4 # 触发拥堵检测的最小车辆数
+        
+        # 算法阈值配置
+        self.fire_conf = 0.5          # 烟火检测阈值
+        self.debris_conf = 0.7        # 抛洒物检测阈值
+        self.person_conf = 0.5        # 行人检测阈值  
+        self.average_speed = 10       # 平均速度阈值
+        self.vehicle_count = 5        # 车辆数量阈值
+        self.motorcycle_conf = 0.05   # 摩托车检测阈值
+        self.slice_params = [2,2,0.2,0.2]  # 默认分片参数
+        
+        # 主方向配置（用于逆行检测）
+        self.main_directions = []    # 从配置文件读取的主方向向量
+        
+    def set_main_direction(self, direction_config):
+        if isinstance(direction_config, list):
+                        self.main_directions = []
+                        # 配置格式: [{"end": {"x": 0.404, "y": 0.192}, "start": {"x": 0.512, "y": 0.506}}, ...]
+                        for idx, direction_item in enumerate(direction_config):
+                            if 'start' in direction_item and 'end' in direction_item:
+                                start = direction_item['start']
+                                end = direction_item['end']
+                                # 计算方向向量 (归一化坐标)
+                                dx = end['x'] - start['x']
+                                dy = end['y'] - start['y']
+                                # 归一化方向向量
+                                norm = np.sqrt(dx * dx + dy * dy)
+                                if norm > 0:
+                                    direction_vector = np.array([dx / norm, dy / norm])
+                                    self.main_directions.append(direction_vector)
+                                    logger.info(f"主方向[{idx}]已配置: start({start['x']:.3f}, {start['y']:.3f}) -> end({end['x']:.3f}, {end['y']:.3f})")
+                                    logger.info(f"  归一化向量: {direction_vector}")
+                                else:
+                                    logger.warning(f"主方向[{idx}]起点和终点相同，跳过")
+                                    self.main_directions.append(None)
+                            else:
+                                logger.warning(f"主方向[{idx}]配置缺少 start 或 end 字段，跳过")
+                                self.main_directions.append(None)
+                        logger.info(f"共配置 {len(self.main_directions)} 个主方向（对应 ROI 区域）")
+
+    def set_osd_check(self, enabled=False):
+        """
+        设置是否启用 OSD 相似度检测
+        
+        Args:
+            enabled (bool): 是否启用 OSD 检测，默认为 False
+        """
+        self.enable_osd_check = enabled
+        if enabled:
+            logger.info("OSD 相似度检测已启用")
+        else:
+            logger.info("OSD 相似度检测已禁用")
+            # 重置 OSD 区域缓存
+            self.previous_osd_region = None
+
+    def configure_params(self, yolo_config):
+        """
+        配置YOLO检测参数
+        
+        Args:
+            yolo_config (dict): 包含YOLO配置的字典
+                - Slice: 分片参数，格式为"2,2,0.2,0.2"
+                - FireConf: 烟火检测阈值
+                - PersonConf: 行人检测阈值  
+                - AverageSpeed: 平均速度阈值
+                - VehicleCount: 车辆数量阈值
+                - MotorcycleConf: 摩托车检测阈值
+                - EnableOsdCheck: 是否启用 OSD 检测（可选）
+        """
+        try:
+            # 处理分片参数 Slice
+            if 'Slice' in yolo_config:
+                slice_str = yolo_config['Slice']
+                if isinstance(slice_str, str):
+                    # 解析字符串格式的分片参数，如 "2,2,0.2,0.2"
+                    slice_parts = slice_str.split(',')
+                    if len(slice_parts) == 4:
+                        self.slice_params = [float(part.strip()) for part in slice_parts]
+                        # 前两个参数应该是整数（分片数）
+                        self.slice_params[0] = int(self.slice_params[0])
+                        self.slice_params[1] = int(self.slice_params[1])
+                        logger.info(f"分片参数已更新: {self.slice_params}")
+                    else:
+                        logger.warning(f"分片参数格式错误，使用默认值: {self.slice_params}")
+                elif isinstance(slice_str, list) and len(slice_str) == 4:
+                    self.slice_params = slice_str
+                    logger.info(f"分片参数已更新: {self.slice_params}")
+            
+            # 处理烟火检测阈值
+            if 'FireConf' in yolo_config:
+                try:
+                    self.fire_conf = float(yolo_config['FireConf'])
+                    logger.info(f"烟火检测阈值已更新: {self.fire_conf}")
+                except (ValueError, TypeError):
+                    logger.warning(f"烟火检测阈值格式错误，使用默认值: {self.fire_conf}")
+            
+            # 处理行人检测阈值
+            if 'PersonConf' in yolo_config:
+                try:
+                    self.person_conf = float(yolo_config['PersonConf'])
+                    logger.info(f"行人检测阈值已更新: {self.person_conf}")
+                except (ValueError, TypeError):
+                    logger.warning(f"行人检测阈值格式错误，使用默认值: {self.person_conf}")
+            
+            # 处理平均速度阈值
+            if 'AverageSpeed' in yolo_config:
+                try:
+                    self.average_speed = float(yolo_config['AverageSpeed'])
+                    logger.info(f"平均速度阈值已更新: {self.average_speed}")
+                except (ValueError, TypeError):
+                    logger.warning(f"平均速度阈值格式错误，使用默认值: {self.average_speed}")
+            
+            # 处理车辆数量阈值
+            if 'VehicleCount' in yolo_config:
+                try:
+                    self.vehicle_count = int(yolo_config['VehicleCount'])
+                    logger.info(f"车辆数量阈值已更新: {self.vehicle_count}")
+                except (ValueError, TypeError):
+                    logger.warning(f"车辆数量阈值格式错误，使用默认值: {self.vehicle_count}")
+            
+            # 处理摩托车检测阈值
+            if 'MotorcycleConf' in yolo_config:
+                try:
+                    self.motorcycle_conf = float(yolo_config['MotorcycleConf'])
+                    logger.info(f"摩托车检测阈值已更新: {self.motorcycle_conf}")
+                except (ValueError, TypeError):
+                    logger.warning(f"摩托车检测阈值格式错误，使用默认值: {self.motorcycle_conf}")
+            
+            # 处理主方向配置（数组，与 ROI 一一对应）
+            if 'Direction' in yolo_config:
+                try:
+                    direction_config = yolo_config['Direction']
+                    if isinstance(direction_config, list):
+                        self.main_directions = []
+                        # 配置格式: [{"end": {"x": 0.404, "y": 0.192}, "start": {"x": 0.512, "y": 0.506}}, ...]
+                        for idx, direction_item in enumerate(direction_config):
+                            if 'start' in direction_item and 'end' in direction_item:
+                                start = direction_item['start']
+                                end = direction_item['end']
+                                # 计算方向向量 (归一化坐标)
+                                dx = end['x'] - start['x']
+                                dy = end['y'] - start['y']
+                                # 归一化方向向量
+                                norm = np.sqrt(dx * dx + dy * dy)
+                                if norm > 0:
+                                    direction_vector = np.array([dx / norm, dy / norm])
+                                    self.main_directions.append(direction_vector)
+                                    logger.info(f"主方向[{idx}]已配置: start({start['x']:.3f}, {start['y']:.3f}) -> end({end['x']:.3f}, {end['y']:.3f})")
+                                    logger.info(f"  归一化向量: {direction_vector}")
+                                else:
+                                    logger.warning(f"主方向[{idx}]起点和终点相同，跳过")
+                                    self.main_directions.append(None)
+                            else:
+                                logger.warning(f"主方向[{idx}]配置缺少 start 或 end 字段，跳过")
+                                self.main_directions.append(None)
+                        logger.info(f"共配置 {len(self.main_directions)} 个主方向（对应 ROI 区域）")
+                    else:
+                        logger.warning(f"主方向配置格式错误，应为列表")
+                except Exception as e:
+                    logger.warning(f"解析主方向配置时出错: {e}")
+            
+            # 处理 OSD 检测开关
+            # if 'EnableOsdCheck' in yolo_config:
+            #     try:
+            #         enable_osd = bool(yolo_config['EnableOsdCheck'])
+            #         self.set_osd_check(enable_osd)
+            #     except (ValueError, TypeError):
+            #         print(f"WARNING: OSD检测开关格式错误，使用默认值: {self.enable_osd_check}")
+                    
+        except Exception as e:
+            logger.warning(f"配置参数时发生错误: {e}")
+            logger.warning("将使用默认参数")
+
+        # 初始化场景事件
+        self.events = {
+            # 目标检测
+            '行人': False,
+            '物体遗留': False,
+            '摩托车': False,
+
+            '烟火':False,
+            # 目标跟踪
+            '逆行': False,
+            '停车': False,
+            '行驶缓慢': False,
+        }
+    
+    def set_road_mask(self, polygons, width, height):
+        """
+        根据传入的归一化多边形坐标生成道路掩码。
+
+        Args:
+            polygons (list): 包含多边形顶点的列表，如 [[{'x':0.1,'y':0.1}, ...]]。
+            width (int): 图像宽度。
+            height (int): 图像高度。
+        """
+        self.frame_width = width
+        self.frame_height = height
+        self.road_polygons = polygons
+        self.road_mask = np.zeros((self.frame_height, self.frame_width), dtype=np.uint8)
+        
+        for poly in polygons:
+            # 将归一化坐标转换为像素坐标
+            points = np.array([
+                (int(p['x'] * self.frame_width), int(p['y'] * self.frame_height))
+                for p in poly
+            ], dtype=np.int32)
+            
+            # 绘制实心多边形到掩码上
+            cv2.fillPoly(self.road_mask, [points], 255)
+        
+        logger.info("道路掩码已根据传入的多边形设置。")
+        
+    
+    async def detect(self, frame_data):
+        
+        
+        
+        # self.frame_width = frame_data.width
+        # self.frame_height = frame_data.heigh
+
+        # is_success, encoded_img = cv2.imencode('.jpg', img)
+        # if not is_success:
+        #     print("ERROR: 无法将图像编码为 JPEG 格式。")
+        #     return []
+
+        # # 4. 将编码后的字节流转换为 base64 字符串
+        # img64 = base64.b64encode(encoded_img).decode('utf-8')
+
+        # 5. 构建请求 payload
+        payload = {
+            'image': frame_data.dict()["image"],
+            'conf': 0.05,
+            'slice_params': self.slice_params,#分片参数  [0]水平分片数，[1]垂直分片数，[2]水平分片重叠比例，[3]垂直分片重叠比例
+
+        }
+        # print(f"payload: {payload}")
+
+        try:
+
+            # if not os.path.exists(output_folder):
+            #     os.makedirs(output_folder)
+            #     print(f"INFO: 文件夹 '{output_folder}' 已创建。")
+            # current_date = datetime.datetime.now()
+            # filename = current_date.strftime("%Y-%m-%d_%H-%M-%S") + ".jpg"
+            # full_path = os.path.join(output_folder, filename)
+
+            # # Send the POST request
+            # response2 = requests.post('http://192.168.1.65:5004/detect', json=payload, timeout=300)
+            
+            # # Check for HTTP errors
+            # response2.raise_for_status()
+
+            # # Open the file in binary write mode and save the content
+            # with open(full_path, 'wb') as f:
+            #     f.write(response2.content)
+
+            # print(f"INFO: 文件已成功保存为 {full_path}")
+
+
+            response = requests.post(self.detect_url, json=payload)
+            response.raise_for_status() # 检查HTTP请求是否成功
+            return response.json().get('results', [])
+        except requests.exceptions.RequestException as e:
+            logger.error(f"调用 Detect API 时发生异常: {e}")
+            return []
+        
+        
+
+    def detect_debris(self, frame, slice_params=[1,1,0,0]):
+        # """利用帧间差分在道路范围内检测飘洒物。"""
+        # if self.road_mask.shape[0] == 0:
+        #     print("WARNING: 道路掩码未初始化，无法检测飘洒物。", file=sys.stderr)
+        #     return False
+            
+        # current_gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+        # prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+        
+        # frame_diff = cv2.absdiff(prev_gray, current_gray)
+        # _, motion_mask = cv2.threshold(frame_diff, 30, 255, cv2.THRESH_BINARY)
+        
+        # motion_in_road = cv2.bitwise_and(motion_mask, motion_mask, mask=self.road_mask)
+        
+        # # 简单地判断是否有足够多的运动像素
+        # return np.sum(motion_in_road) > 1000
+
+        # ''' 切片识别抛洒物 '''
+        # bbox = []
+        # found = False
+        # patch_n = 2
+        # for i in range(patch_n):
+        #     for j in range(patch_n):
+        #         xmin,ymin,xmax,ymax = 1/patch_n*i,1/patch_n*j,1/patch_n*(i+1),1/patch_n*(j+1)
+        #         img64 = frame.crop64(rect=[xmin,ymin,xmax,ymax],resize=(512,512))
+        #         url = 'http://127.0.0.1:7001/api/v1/classify'
+        #         headers = {'token': '716f492d-7025-469d-a686-f2e20a1df7c7'}
+        #         data = {
+        #             "img64": img64,
+        #         }
+        #         response = requests.post(url, headers=headers, json=data)
+        #         for e in response.json()['data']:
+        #             if 'trash' in e['label']:
+        #                 found = True
+        #                 bbox.append({'bbox':[xmin,ymin,xmax,ymax],'class_name':'trash','confidence':e['probability']})
+                    
+        # return found, bbox
+
+        found = False
+        objs = []
+        try:
+            payload = {
+                'image': frame.img64(),
+                'conf': self.fire_conf,
+                'slice_params': slice_params,
+            }
+            # print(self.fire_url)
+            response = requests.post(self.fire_url, json=payload)
+            # print(response.text)
+            response.raise_for_status() # 检查HTTP请求是否成功
+            ret = response.json()
+            for res in ret['results']:
+                if res['class_name'] in ['debris']:
+                    if res['confidence'] > self.debris_conf:
+                        # res['bbox'] = [patch_size*res['bbox'][0]+x1,patch_size*res['bbox'][1]+y1,patch_size*res['bbox'][2]+x1,patch_size*res['bbox'][3]+y1]
+                        objs.append(res)
+                        found = True
+        except requests.exceptions.RequestException as e:
+            print(f"ERROR: 调用 Detect API 时发生异常: {e}", file=sys.stderr)
+            return False, []
+
+        return found, objs
+        
+
+    def detect_fire(self, frame, slice_params=[1,1,0,0]):
+        """
+        检查检测结果中是否有“火”。
+        """
+        
+
+        found = False
+        objs = []
+        try:
+            payload = {
+                'image': frame.img64(),
+                'conf': self.fire_conf,
+                'slice_params': slice_params,
+                
+            }
+            # print(self.fire_url)
+            response = requests.post(self.fire_url, json=payload)
+            # print(response.text)
+            response.raise_for_status() # 检查HTTP请求是否成功
+            ret = response.json()
+            for res in ret['results']:
+                if res['class_name'] in ['fire', 'Fire']:
+                    if res['confidence'] > self.fire_conf:
+                        # res['bbox'] = [patch_size*res['bbox'][0]+x1,patch_size*res['bbox'][1]+y1,patch_size*res['bbox'][2]+x1,patch_size*res['bbox'][3]+y1]
+                        objs.append(res)
+                        found = True
+        except requests.exceptions.RequestException as e:
+            print(f"ERROR: 调用 Detect API 时发生异常: {e}", file=sys.stderr)
+            return False, []
+
+        return found, objs
+
+    def is_bbox_in_roi(self, bbox, roi):
+        """
+        判断检测框是否在 ROI 区域内。
+        
+        Args:
+            bbox: 归一化的边界框 [x1, y1, x2, y2]
+            roi: ROI 区域，格式为 [[{"x": 0.3155, "y": 0.3229}, ...]]
+        
+        Returns:
+            bool: 如果检测框中心在 ROI 内返回 True，否则返回 False
+        """
+        if not roi or len(roi) == 0:
+            # 如果没有 ROI，默认认为所有检测都在区域内
+            return True
+        
+        # 计算检测框的中心点（归一化坐标）
+        center_x = (bbox[0] + bbox[2]) / 2.0
+        center_y = (bbox[1] + bbox[3]) / 2.0
+        
+        # 遍历所有 ROI 多边形
+        for polygon in roi:
+            # 将 ROI 多边形转换为 numpy 数组
+            points = np.array([[p['x'], p['y']] for p in polygon], dtype=np.float32)
+            
+            # 使用 OpenCV 的 pointPolygonTest 判断点是否在多边形内
+            result = cv2.pointPolygonTest(points, (center_x, center_y), False)
+            
+            # 如果在任意一个 ROI 多边形内，返回 True
+            if result >= 0:
+                return True
+        
+        return False
+
+    def is_point_in_roi(self, point, roi):
+        """
+        判断点是否在 ROI 区域内。
+        
+        Args:
+            point: 归一化的点坐标 [x, y] 或 (x, y)
+            roi: ROI 区域，格式为 [[{"x": 0.3155, "y": 0.3229}, ...]]
+        
+        Returns:
+            bool: 如果点在 ROI 内返回 True，否则返回 False
+        """
+        if not roi or len(roi) == 0:
+            # 如果没有 ROI，默认认为所有点都在区域内
+            return True
+        
+        # 提取点坐标
+        if isinstance(point, (list, tuple)) and len(point) >= 2:
+            x, y = point[0], point[1]
+        else:
+            return False
+        
+        # 遍历所有 ROI 多边形
+        for polygon in roi:
+            # 将 ROI 多边形转换为 numpy 数组
+            points = np.array([[p['x'], p['y']] for p in polygon], dtype=np.float32)
+            
+            # 使用 OpenCV 的 pointPolygonTest 判断点是否在多边形内
+            result = cv2.pointPolygonTest(points, (x, y), False)
+            
+            # 如果在任意一个 ROI 多边形内，返回 True
+            if result >= 0:
+                return True
+        
+        # 不在任何 ROI 内
+        return False
+    
+    def _filter_trajectories_by_roi(self, trajectories, roi):
+        """
+        过滤掉所有轨迹点都在 ROI 外的轨迹。
+        
+        Args:
+            trajectories: 轨迹字典，格式为 {track_id: {'trajectory': [...], 'class_name': ...}}
+            roi: ROI 区域，格式为 [[{"x": 0.3155, "y": 0.3229}, ...]]
+        
+        Returns:
+            dict: 过滤后的轨迹字典
+        """
+        if not roi or len(roi) == 0:
+            # 如果没有 ROI，返回所有轨迹
+            return trajectories
+        
+        filtered_trajectories = {}
+        
+        for track_id, track_data in trajectories.items():
+            if 'trajectory' not in track_data or not track_data['trajectory']:
+                continue
+            
+            # 检查轨迹中是否有至少一个点在 ROI 内
+            has_point_in_roi = False
+            for point in track_data['trajectory']:
+                if 'center' in point and len(point['center']) >= 2:
+                    if self.is_point_in_roi(point['center'], roi):
+                        has_point_in_roi = True
+                        break
+            
+            # 如果有至少一个点在 ROI 内，保留这条轨迹
+            if has_point_in_roi:
+                filtered_trajectories[track_id] = track_data
+        
+        return filtered_trajectories
+    
+    def _filter_trajectories_by_class(self, trajectories, allowed_classes=['car', 'truck', 'bus']):
+        """
+        过滤轨迹，只保留指定类别的轨迹。
+        
+        Args:
+            trajectories: 轨迹字典，格式为 {track_id: {'trajectory': [...], 'class_name': ...}}
+            allowed_classes: 允许的类别列表，默认为 ['car', 'truck', 'bus']
+        
+        Returns:
+            dict: 过滤后的轨迹字典
+        """
+        filtered_trajectories = {}
+        
+        for track_id, track_data in trajectories.items():
+            if 'class_name' in track_data and track_data['class_name'] in allowed_classes:
+                filtered_trajectories[track_id] = track_data
+        
+        return filtered_trajectories
+    
+    def _filter_trajectories_by_confidence(self, trajectories, min_confidence=0.4):
+        """
+        过滤轨迹点，只保留置信度大于等于指定阈值的轨迹点。
+        如果过滤后轨迹为空，则删除该轨迹。
+        
+        Args:
+            trajectories: 轨迹字典，格式为 {track_id: {'trajectory': [{'confidence': ..., ...}, ...], ...}}
+            min_confidence: 最小置信度阈值，默认为 0.4
+        
+        Returns:
+            dict: 过滤后的轨迹字典
+        """
+        filtered_trajectories = {}
+        
+        for track_id, track_data in trajectories.items():
+            if 'trajectory' in track_data and isinstance(track_data['trajectory'], list):
+                # 过滤轨迹中的每个点，只保留置信度 >= min_confidence 的点
+                filtered_points = [
+                    point for point in track_data['trajectory']
+                    if 'confidence' not in point or point['confidence'] >= min_confidence
+                ]
+                
+                # 只有当过滤后还有轨迹点时，才保留该轨迹
+                if filtered_points:
+                    filtered_track_data = track_data.copy()
+                    filtered_track_data['trajectory'] = filtered_points
+                    filtered_trajectories[track_id] = filtered_track_data
+            else:
+                # 如果没有 trajectory 字段，保留该轨迹
+                filtered_trajectories[track_id] = track_data
+        
+        return filtered_trajectories
+
+    def detect_person(self, detections):
+        """
+        检查检测结果中是否有"人"。
+        """
+        for item in detections:
+            if item.get("class_name") == "person" and item.get("confidence") > self.person_conf:
+                return True
+
+        return False
+    
+    def detect_motorcycle(self, detections, roi):
+        """
+        检查检测结果中是否有"摩托车"。
+        如果有 ROI，会过滤掉不在 ROI 内的检测结果。
+        
+        Args:
+            detections: 检测结果列表
+            roi: ROI 区域，格式为 [[{"x": 0.3155, "y": 0.3229}, ...]]
+        
+        Returns:
+            bool: 如果检测到摩托车返回 True，否则返回 False
+        """
+        # print("self.motorcycle_conf", self.motorcycle_conf)
+        
+        for item in detections:
+            # 检查是否是摩托车或自行车
+            if (item.get("class_name") == "motorcycle" or item.get("class_name") == "bicycle") and item.get("confidence") > self.motorcycle_conf:
+                # 如果有 ROI，检查是否在 ROI 内
+                if roi:
+                    bbox = item.get("bbox")
+                    if bbox and self.is_bbox_in_roi(bbox, roi):
+                        return True
+                else:
+                    # 没有 ROI 时，直接返回 True
+                    return True
+
+        return False
+
+    def detect_reverse(self, track_history):
+        """
+        检测是否有车辆逆行（基于5点短轨迹）。
+        
+        改进点：
+        1. 适配每次API调用产生的5点轨迹（10秒数据，每2秒一帧）
+        2. 分离纵向和横向运动分量，只关注纵向逆行，避免变道误判
+        3. 使用首尾点和中间段的方向一致性验证
+        4. 透视补偿：近处车辆和远处车辆使用相对方向判断
+        5. 支持多个 ROI 区域，每个区域使用对应的主方向
+        """
+        if self.road_mask is None or self.road_mask.shape[0] == 0:
+            logger.warning("道路掩码未设置，无法进行逆行检测。")
+            return False
+
+        reverse_cars = []
+        
+        # 使用 ROI 多边形区域来分组（而不是轮廓）
+        # 这样可以确保每个 ROI 区域使用对应的主方向
+        track_groups = defaultdict(list)
+        
+        for track_id, trajectory in track_history.items():
+            if not trajectory: continue
+            center_pos = (int(trajectory[-1][0]), int(trajectory[-1][1]))
+            
+            # 判断车辆在哪个 ROI 区域内
+            if self.road_polygons:
+                for roi_idx, roi_polygon in enumerate(self.road_polygons):
+                    # 将 ROI 多边形转换为像素坐标
+                    points = np.array([
+                        (int(p['x'] * self.frame_width), int(p['y'] * self.frame_height))
+                        for p in roi_polygon
+                    ], dtype=np.int32)
+                    
+                    # 判断点是否在多边形内
+                    if cv2.pointPolygonTest(points, center_pos, False) >= 0:
+                        track_groups[roi_idx].append(track_id)
+                        break  # 找到所在区域后跳出
+            else:
+                # 如果没有 ROI 多边形配置，使用轮廓（兼容旧逻辑）
+                contours, _ = cv2.findContours(self.road_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for i, c in enumerate(contours):
+                    if cv2.pointPolygonTest(c, center_pos, False) >= 0:
+                        track_groups[i].append(track_id)
+                        break
+        
+        for region_id, track_ids in track_groups.items():
+            if len(track_ids) < 2: continue
+            
+            # 收集所有车辆的整体运动向量（首尾点）
+            motion_vectors = []
+            valid_track_ids = []
+            
+            for track_id in track_ids:
+                trajectory = track_history[track_id]
+                # 至少需要5个点才能判断（API每次返回5帧）
+                # print("轨迹长度:",len(trajectory))
+                if len(trajectory) >= 2:
+                    start_pos = np.array(trajectory[0])
+                    end_pos = np.array(trajectory[-1])
+                    motion = end_pos - start_pos
+
+                    motion_vectors.append(motion)
+                    valid_track_ids.append(track_id)
+                    # 过滤几乎静止的车辆
+                    # print("motion:",np.linalg.norm(motion))
+                    if np.linalg.norm(motion) > 5:  # 10秒内至少移动20像素
+                        motion_vectors.append(motion)
+                        valid_track_ids.append(track_id)
+            # print("motion_vectors:",motion_vectors)
+            # print("valid_track_ids:",valid_track_ids)
+            
+            # 判断是否使用配置的主方向（根据 ROI 区域索引）
+            main_direction = None
+            if self.main_directions and region_id < len(self.main_directions):
+                configured_direction = self.main_directions[region_id]
+                if configured_direction is not None:
+                    # 使用配置的主方向（将归一化坐标转换为像素坐标系方向）
+                    # 归一化坐标中的 dx, dy 在像素坐标系中需要乘以图像宽高
+                    main_direction_pixel = np.array([
+                        configured_direction[0] * self.frame_width,
+                        configured_direction[1] * self.frame_height
+                    ])
+                    # 归一化像素坐标系下的方向向量
+                    main_direction = main_direction_pixel / (np.linalg.norm(main_direction_pixel) + 1e-6)
+            
+            # 如果没有配置主方向，则动态计算
+            if main_direction is None:
+                return False
+                # if len(motion_vectors) < 2:
+                #     continue
+                # avg_motion = np.mean(motion_vectors, axis=0)
+                # main_direction = avg_motion / (np.linalg.norm(avg_motion) + 1e-6)
+            
+            # 提取主方向的垂直方向（用于区分纵向和横向）
+            # 主方向为 [dx, dy]，垂直方向为 [-dy, dx]
+            perpendicular_direction = np.array([-main_direction[1], main_direction[0]])
+            
+            # 检查每辆车是否逆行
+            for track_id in valid_track_ids:
+                trajectory = track_history[track_id]
+                
+                if len(trajectory) < 2:
+                    continue
+                
+                # 计算整体运动（首尾点）
+                overall_motion = np.array(trajectory[-1]) - np.array(trajectory[0])
+                overall_norm = np.linalg.norm(overall_motion)
+                
+                # 过滤静止车辆
+                if overall_norm < 20:
+                    continue
+                
+                # 计算整体运动的纵向和横向分量
+                longitudinal_overall = np.dot(overall_motion, main_direction)
+                lateral_overall = np.dot(overall_motion, perpendicular_direction)
+                
+                # 检查中间段的运动一致性（防止首尾正常但中间逆行）
+                reverse_segments = 0
+                total_segments = 0
+                
+                # 分成2-3个小段检查
+                segment_size = max(2, len(trajectory) // 3)
+                for i in range(0, len(trajectory) - segment_size):
+                    seg_start = np.array(trajectory[i])
+                    seg_end = np.array(trajectory[i + segment_size])
+                    seg_motion = seg_end - seg_start
+                    seg_norm = np.linalg.norm(seg_motion)
+                    
+                    # 过滤微小移动
+                    if seg_norm < 10:
+                        continue
+                    
+                    total_segments += 1
+                    seg_longitudinal = np.dot(seg_motion, main_direction)
+                    seg_lateral = np.dot(seg_motion, perpendicular_direction)
+                    
+                    # 判断该段是否逆行：纵向为负，且纵向分量显著大于横向
+                    if seg_longitudinal < 0 and abs(seg_longitudinal) > abs(seg_lateral) * 1.8:
+                        reverse_segments += 1
+                
+                # 逆行判定条件：
+                # 1. 整体纵向分量为负（与主方向相反）
+                # 2. 整体纵向分量的绝对值 > 横向分量的1.8倍（不是单纯变道）
+                # 3. 整体方向与主方向夹角 > 120度
+                # 4. 至少50%的中间段也显示逆行（一致性）
+                
+                is_reverse = False
+                
+                # 条件1和2：整体方向判断
+                if longitudinal_overall < 0 and abs(longitudinal_overall) > abs(lateral_overall) * 1.8:
+                    # 条件3：角度检查（cos(120°) = -0.5）
+                    cos_angle = longitudinal_overall / overall_norm
+                    if cos_angle < -0.4:  # 约115度以上
+                        # 条件4：中间段一致性
+                        if total_segments == 0 or (reverse_segments / total_segments) >= 0.5:
+                            is_reverse = True
+                
+                if is_reverse:
+                    reverse_cars.append(track_id)
+        
+        if reverse_cars:
+            for track_id in reverse_cars:
+                self._tracker.delet_tracks(track_id)
+            return True
+        return False
+    
+
+    def detect_stationary(self, track_history):
+        """
+        检测是否有车辆停车。
+        
+      
+        """
+        stationary_cars = []
+        for track_id, trajectory in track_history.items():
+            if len(trajectory) >= self.STATIONARY_THRESHOLD:
+                is_stationary = all(np.linalg.norm(np.array(trajectory[-i]) - np.array(trajectory[-i-1])) <= self.POSITION_TOLERANCE for i in range(1, self.STATIONARY_THRESHOLD))
+                if is_stationary:
+                    stationary_cars.append(track_id)
+                    
+        
+        if stationary_cars:
+            logger.info(f"检测到停车车辆: {stationary_cars}")
+            for i in stationary_cars:
+                self._tracker.delet_tracks(i)
+            return True
+        return False
+
+    def calculate_image_similarity(self, img1, img2):
+        """
+        计算两张图像的相似度（使用OpenCV内置方法）
+        结合直方图比较和MSE，不依赖外部库
+        Args:
+            img1: 第一张图像
+            img2: 第二张图像
+        Returns:
+            float: 相似度分数 (0-1)，1表示完全相同
+        """
+        try:
+            # 确保图像尺寸一致
+            if img1.shape != img2.shape:
+                return 0.0
+            
+            # 转换为灰度图
+            if len(img1.shape) == 3:
+                gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+            else:
+                gray1 = img1
+                
+            if len(img2.shape) == 3:
+                gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+            else:
+                gray2 = img2
+            
+            # 方法1: 计算直方图相似度（相关性）
+            hist1 = cv2.calcHist([gray1], [0], None, [256], [0, 256])
+            hist2 = cv2.calcHist([gray2], [0], None, [256], [0, 256])
+            hist1 = cv2.normalize(hist1, hist1).flatten()
+            hist2 = cv2.normalize(hist2, hist2).flatten()
+            
+            # 使用相关性比较直方图，返回值范围[-1, 1]，1表示完全相同
+            hist_similarity = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
+            
+            # 方法2: 计算MSE（均方误差），然后转换为相似度
+            mse = np.mean((gray1.astype(float) - gray2.astype(float)) ** 2)
+            # 将MSE转换为相似度分数，MSE越小相似度越高
+            # 假设最大MSE为10000（差异很大的图像），转换为0-1的相似度
+            mse_similarity = max(0, 1 - (mse / 10000.0))
+            
+            # 方法3: 计算模板匹配度
+            result = cv2.matchTemplate(gray1, gray2, cv2.TM_CCOEFF_NORMED)
+            template_similarity = result[0][0]
+            
+            # 综合三种方法，取加权平均
+            # 直方图相似度权重0.3，MSE相似度权重0.3，模板匹配权重0.4
+            final_similarity = (hist_similarity * 0.3 + 
+                              mse_similarity * 0.3 + 
+                              template_similarity * 0.4)
+            
+            return max(0.0, min(1.0, final_similarity))  # 确保返回值在[0,1]范围内
+            
+        except Exception as e:
+            logger.error(f"计算图像相似度时出错: {e}")
+            return 0.0
+    
+    def extract_vehicle_roi(self, image, box):
+        """
+        从图像中提取车辆的ROI区域
+        Args:
+            image: 原始图像
+            box: 车辆边界框 [x1, y1, x2, y2]
+        Returns:
+            numpy.ndarray: 提取的ROI图像
+        """
+        try:
+            x1, y1, x2, y2 = map(int, box)
+            # 确保坐标在图像范围内
+            h, w = image.shape[:2]
+            x1 = max(0, min(x1, w))
+            y1 = max(0, min(y1, h))
+            x2 = max(0, min(x2, w))
+            y2 = max(0, min(y2, h))
+            
+            if x2 <= x1 or y2 <= y1:
+                return None
+                
+            roi = image[y1:y2, x1:x2].copy()
+            return roi
+        except Exception as e:
+            logger.error(f"提取ROI时出错: {e}")
+            return None
+    
+    def verify_parking_with_images(self, track_id, frames, vehicle_box):
+        """
+        通过图像相似度验证停车（使用固定的识别框位置在5帧中截取并比对）
+        Args:
+            track_id: 跟踪ID
+            frames: 5帧图像列表
+            vehicle_box: 车辆边界框 [x1, y1, x2, y2]，在所有帧中使用同一个位置
+        Returns:
+            bool: 是否确认为停车
+        """
+        if len(frames) < 2:
+            return False
+        
+        # 从每一帧中使用相同的box位置提取ROI
+        roi_images = []
+        for i, frame in enumerate(frames):
+            frame_img = frame.image()
+            if frame_img is None:
+                continue
+            
+            # 使用相同的box位置截取ROI
+            roi = self.extract_vehicle_roi(frame_img, vehicle_box)
+            if roi is not None:
+                roi_images.append(roi)
+                # print(f"Track {track_id} 第{i}帧 ROI提取成功，尺寸: {roi.shape}")
+            # else:
+            #     print(f"Track {track_id} 第{i}帧 ROI提取失败")
+        
+        # 至少需要2张图像才能比较
+        if len(roi_images) < 2:
+            logger.debug(f"Track {track_id} 有效ROI不足2张，无法验证")
+            return False
+        
+        # print(f"Track {track_id} 成功提取 {len(roi_images)} 张ROI图像，开始比较相似度")
+        
+        # 计算所有相邻帧的相似度
+        similarities = []
+        for i in range(len(roi_images) - 1):
+            # 调整图像大小以便比较（使用较小的尺寸）
+            h1, w1 = roi_images[i].shape[:2]
+            h2, w2 = roi_images[i+1].shape[:2]
+            target_h = min(h1, h2)
+            target_w = min(w1, w2)
+            
+            if target_h <= 0 or target_w <= 0:
+                continue
+            
+            img1_resized = cv2.resize(roi_images[i], (target_w, target_h))
+            img2_resized = cv2.resize(roi_images[i+1], (target_w, target_h))
+            
+            similarity = self.calculate_image_similarity(img1_resized, img2_resized)
+            similarities.append(similarity)
+            # print(f"Track {track_id} 帧 {i} vs {i+1} 相似度: {similarity:.3f}")
+        
+        # 检查平均相似度是否超过阈值
+        if len(similarities) > 0:
+            avg_similarity = np.mean(similarities)
+            # print(f"Track {track_id} 平均相似度: {avg_similarity:.3f}, 阈值: {self.parking_similarity_threshold}")
+            
+            if avg_similarity >= self.parking_similarity_threshold:
+                # print(f"Track {track_id} 确认为停车（图像相似度验证通过）")
+                return True
+            else:
+                # print(f"Track {track_id} 不是停车（图像差异较大，可能是不同车辆）")
+                return False
+        
+        return False
+
+  
+    def detect_congestion(self, detections):
+        """
+        检测是否有区域拥堵。
+        Args:
+            detections (list): 当前帧的检测结果列表。
+        Returns:
+            bool: 如果检测到拥堵，则返回 True，否则返回 False。
+        """
+        if self.road_mask is None or self.road_mask.shape[0] == 0:
+            logger.warning("未设置道路掩码，无法进行拥堵检测。")
+            return False
+
+        # --- 1. 获取道路区域的轮廓和尺寸 ---
+        # 使用 .copy() 确保 findContours 不修改原图
+        contours, _ = cv2.findContours(self.road_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            logger.warning("未找到任何道路轮廓。")
+            return False
+        
+        height = self.road_mask.shape[0]
+        weight = self.road_mask.shape[1]
+        
+
+        # debug_image = cv2.cvtColor(self.road_mask.copy(), cv2.COLOR_GRAY2BGR)
+        # 原始mask是0/255，这里可以将其变为浅灰色背景，方便查看
+        # debug_image[self.road_mask > 0] = [200, 200, 200] # 道路区域显示为浅灰色
+        # 按道路区域对车辆进行分组
+        road_car_groups = defaultdict(list)
+        actual_road_areas = {}
+        # cv2.drawContours(debug_image, contours, -1, (0, 255, 0), 2) # 轮廓线为绿色，粗细为2
+        # --- 2. 预先计算所有轮廓的实际像素面积 ---
+        for i, c in enumerate(contours):
+            # cv2.contourArea 计算轮廓 c 围成的实际像素面积
+            area = cv2.contourArea(c) 
+            actual_road_areas[i] = area
+            
+        # logger.info(f"所有道路轮廓面积: {actual_road_areas}")
+
+        # --- 3. 车辆分组逻辑 ---
+        for det in detections:
+            if det.get('class_name') in ['car', 'truck', 'bus']:
+                bbox = det.get('bbox')
+                
+                # 计算中心点的归一化坐标
+                cx_ratio = (bbox[0] + bbox[2]) / 2 
+                cy_ratio = (bbox[1] + bbox[3]) / 2 
+                
+                # 转换为像素坐标 (必须是整数)
+                cx = int(cx_ratio * weight)
+                cy = int(cy_ratio * height)
+                test_point = (cx, cy)
+                
+                assigned = False # 标志位：是否成功分配到区域
+                
+                for i, c in enumerate(contours):
+                    # 判断车辆中心点是否在道路区域内 (>= 0 表示在内部或边界)
+                    result = cv2.pointPolygonTest(c, test_point, False)
+                    
+                    if result >= 0:
+                        road_car_groups[i].append(det['bbox'])
+                        assigned = True
+                        # cv2.circle(debug_image, test_point, 5, (0, 255, 0), -1) # 绿色实心圆
+                        # 找到所属区域后，立即跳出轮廓循环
+                        break 
+                
+                if not assigned:
+                    # 这一警告能帮助您确定哪些车被漏掉了
+                    # cv2.circle(debug_image, test_point, 5, (0, 0, 255), -1) # 红色实心圆
+                    logger.warning(f"车辆未分配到任何道路区域：Center={test_point}, BBox={bbox}")
+
+
+        # logger.warning(f"实际道路面积 {actual_road_areas}, 车辆分组结果 {road_car_groups}")
+        # cv2.imwrite(f'checkcongestion/congestion_{uuid.uuid4()}.jpg', debug_image)
+        # --- 4. 拥堵判断逻辑 ---
+        for road_id, car_bboxes in road_car_groups.items():
+            # 1. 如果车辆数少于阈值，则不计算拥堵
+            logger.warning(f"道路 {road_id} 车辆数{len(car_bboxes)}。")
+            if len(car_bboxes) < 10:
+                logger.warning(f"道路 {road_id} 车辆数 ({len(car_bboxes)}) 少于阈值 ({self.vehicle_count})，跳过。")
+                continue
+
+            road_area_px = actual_road_areas.get(road_id, 0)
+            
+            if road_area_px <= 0:
+                logger.warning(f"道路区域 {road_id} 实际面积为零，跳过。")
+                continue
+
+            # 2. 计算车辆总面积（像素平方）
+            car_area_px = sum(
+                (bbox[2] - bbox[0]) * weight * (bbox[3] - bbox[1]) * height 
+                for bbox in car_bboxes
+            )
+
+            # logger.warning(f"道路 {road_id} 总面积(px) {road_area_px}, 车辆总面积(px) {car_area_px}")
+            
+            # 3. 计算车路比并判断拥堵
+            congestion_ratio = car_area_px / road_area_px
+            
+            # logger.info(f"道路区域 {road_id} 的车路比为 {congestion_ratio:.2f}")
+            
+            if congestion_ratio > self.CONGESTION_THRESHOLD:
+                logger.warning(f"检测到道路区域 {road_id} 发生拥堵！ 比例: {congestion_ratio:.2f}")
+                return True # 发现拥堵立即返回
+
+        return False
+        
+    
+
+    async def process_detect(self,events,frame_data,enable,roi):
+        """
+        处理每一帧的数据，更新场景状态并进行分析。       
+           
+        """
+        if enable and any(enable.values()):
+            bbox = []
+            results = await self.detect(frame_data)
+            if enable.get("行驶缓慢") and self.detect_congestion(results):
+                # logger.info(f"检测到拥堵")
+                events.add("行驶缓慢")
+           
+            if enable.get("行人") and self.detect_person(results):
+                events.add('行人')
+            if enable.get("摩托车") and self.detect_motorcycle(results,roi):
+                events.add('摩托车')
+            if enable.get("烟火"):
+                found, objs = self.detect_fire(frame_data)
+                if found is False:
+                    found, objs = self.detect_fire(frame_data,[2,2,0,0])
+                if found:
+                    events.add('烟火')
+                    for obj in objs:
+                        bbox.append(obj)
+            # 暂时去掉，在烟火的处理函数里面识别
+            if enable.get("物体遗留"):
+                found, objs = self.detect_debris(frame_data)
+                if found is False:
+                    found, objs = self.detect_debris(frame_data,[2,2,0,0])
+                if found:
+                    events.add('物体遗留')
+                    for obj in objs:
+                        bbox.append(obj)
+
+            for item in results:
+                bbox.append(item)
+            return bbox
+
+        return []
+
+    async def process_track(self,events,frames,enable,roi=None):
+
+        stationary_vehicles = {}
+        
+        if enable and any(enable.values()):
+
+            # OSD 检测逻辑：如果启用了 OSD 检测，在调用 API 前检查这5帧中是否有重复的 OSD
+            if self.enable_osd_check and len(frames) > 1:
+                # 提取所有帧的 OSD 区域
+                osd_regions = []
+                for frame in frames:
+                    frame_image = frame.image()
+                    if frame_image is not None:
+                        osd_region = get_osd_region(frame_image, 0.33, 0.20)
+                        if osd_region is not None:
+                            osd_regions.append(osd_region)
+                
+                # 如果成功提取了至少2帧的OSD区域，检查它们之间是否有重复
+                if len(osd_regions) >= 2:
+                    # 检查任意两帧的OSD是否相同
+                    has_duplicate = False
+                    
+                    for i in range(len(osd_regions)):
+                        for j in range(i + 1, len(osd_regions)):
+                            if osd_regions[i].shape == osd_regions[j].shape:
+                                mse = calculate_mse(osd_regions[i], osd_regions[j])
+                                # logger.debug(f"帧 {i} vs 帧 {j} OSD MSE: {mse}")
+                                if mse < SIMILARITY_THRESHOLD:
+                                    logger.info(f"发现重复的 OSD：帧 {i} 和帧 {j} 相同（MSE: {mse}），跳过 track API 调用")
+                                    has_duplicate = True
+                                    break
+                            else:
+                                logger.debug(f"帧 {i} 和帧 {j} OSD 区域形状不一致: {osd_regions[i].shape} vs {osd_regions[j].shape}")
+                        
+                        if has_duplicate:
+                            break
+                    
+                    if has_duplicate:
+                        return stationary_vehicles
+                    
+                    # 更新上一帧的 OSD 区域
+                    self.previous_osd_region = osd_regions[-1]
+            
+            results=await self._tracker.process(frames)
+            if results is None:
+                return stationary_vehicles
+
+            
+            # 过滤类别，只保留 car、truck、bus
+            if results and 'trajectories' in results:
+                filtered_trajectories = self._filter_trajectories_by_class(results['trajectories'], allowed_classes=['car', 'truck', 'bus'])
+                results['trajectories'] = filtered_trajectories
+            
+            # 过滤置信度低于 0.4 的轨迹
+            if results and 'trajectories' in results:
+                filtered_trajectories = self._filter_trajectories_by_confidence(results['trajectories'], min_confidence=0.4)
+                results['trajectories'] = filtered_trajectories
+            
+           
+            
+            speed_detect=CustomSpeedEstimator( fps=2, # 视频帧率
+            max_hist=5, # 用于计算速度的历史帧数
+            meter_per_pixel=0.04, # 像素到米的转换比例备用
+            max_speed=120)
+            speed_datas = speed_detect.transform_data(results['trajectories'])
+            for i in speed_datas:
+                speed = speed_detect.process_manual(i)
+                # logger.debug(f"speed{speed}")
+                
+            logger.debug(f"speed_detect.spd{speed_detect.spd}")
+            # logger.debug('_tracker',results)
+            
+            # 获取停车车辆信息
+            stationary_vehicles_raw = speed_detect.get_stationary_vehicles()
+            
+            track_history=self._tracker.get_tracks()
+            if enable.get("逆行") and self.detect_reverse(track_history):
+                events.add("逆行")
+            if enable.get("停车"):
+                # 使用图像相似度验证停车
+                confirmed_parking = False
+               
+                
+                if len(frames) > 0 and len(stationary_vehicles_raw) > 0:
+                    # 对每个停车候选车辆进行图像相似度验证
+                    for track_id, vehicle_info in stationary_vehicles_raw.items():
+                        
+                        
+                        # 获取车辆的边界框（使用固定的识别框位置）
+                        vehicle_box = vehicle_info['box']
+                        
+                        
+                        # 使用图像相似度验证是否真的是停车
+                        # 在5帧中都使用相同的box位置截取图像进行比较
+                        if self.verify_parking_with_images(track_id, frames, vehicle_box):
+                            confirmed_parking = True
+                            # 只有验证通过的才添加到最终结果中
+                            stationary_vehicles[track_id] = vehicle_info
+                            # print(f"Track {track_id} 停车确认成功！")
+                
+                if confirmed_parking:
+                    events.add("停车")
+            
+            # if enable.get("行驶缓慢"):
+                
+            #     average_speed,non_zero_len = calculate_average_and_len_non_zero_values(speed_detect.spd)
+            #     logger.debug(f"average_speed={average_speed}, non_zero_len={non_zero_len}")
+            #     #检测到配置台数的车,速度不为0车的平均速度少于配置的速度阈值
+            #     if average_speed < self.average_speed and non_zero_len > self.vehicle_count:
+            #     # if average_speed < 1 and non_zero_len > -1:
+                    
+            #         events.add("行驶缓慢")
+        return stationary_vehicles
+
+        
+
+        # print("===============================")
+        # for  track_id, data in track_history.items():
+                
+        #    print(f"track_id{track_id},data{data}")
+        # self.events["逆行"]=self.detect_reverse(track_history)
+        # self.events["停车"]=self.detect_stationary(track_history)
+        # self.events['行驶缓慢']=self.detect_congestion(track_history)
+
+
+        # 行驶缓慢和停车  新方法:轨迹速度测
+        # for value in speed_detect.spd:
+
+        #     if value == 0:
+        #         self.events["停车"] = True
+        #         break
+        #     else :
+        #         self.events["停车"] = False
+                
+        
+        
+        # average_speed,non_zero_len = calculate_average_and_len_non_zero_values(speed_detect.spd)
+        # if average_speed < 10 and non_zero_len>5:#检测到5台车同时 速度不为0车的平均速度少于
+        #     self.events['行驶缓慢'] = True
+        # else :
+        #     self.events['行驶缓慢'] = False
+        
+        
+        # return self.events.copy()
+
+    async def detect_run(self, **kwargs):
+       
+        frame = kwargs.get('frame')
+        roi = kwargs.get('roi')
+        enable = kwargs.get('enable')
+        
+        detect_enable = {
+            '行人': enable.get('行人', False),
+            '摩托车': enable.get('摩托车', False),
+            '物体遗留': enable.get('物体遗留', False),
+            '烟火': enable.get('烟火', False),
+            '行驶缓慢': enable.get('行驶缓慢', False),
+        }
+       
+
+        events = set()
+        
+        
+        bbox = await self.process_detect(events,frame,detect_enable,roi)
+
+
+        return events, bbox
+    
+    async def track_run(self, **kwargs):
+        frames = kwargs.get('frames')
+        roi = kwargs.get('roi')
+        enable = kwargs.get('enable')
+        
+        
+        track_enable = {
+            '逆行': enable.get('逆行', False),
+            '停车': enable.get('停车', False),
+            '行驶缓慢': enable.get('行驶缓慢', False),
+        }
+        
+
+        events = set()
+       
+        stationary_vehicles = {}
+        scale_stationary_vehicles = {}
+        n = len(frames)
+        if n < 5:
+            # print(f'frames {n}')
+            pass
+        else:
+            width,height = get_image_dimensions_from_base64(frames[0].dict()['image'])
+            
+            # 检查帧间隔是否一致
+            if n >= 2:
+                from datetime import datetime
+                intervals = []
+                for i in range(1, n):
+                    t1 = datetime.fromisoformat(frames[i-1].occur())
+                    t2 = datetime.fromisoformat(frames[i].occur())
+                    # print(frames[i].occur())
+                    interval = (t2 - t1).total_seconds()
+                    intervals.append(interval)  
+                    # print(f'interval{interval}')
+                    if interval > 4:
+                        # events.add('warning:帧间隔大于4秒')
+                        return events, scale_stationary_vehicles
+                
+                
+                # print(frame.dict())
+            if self.road_mask is None or self.road_mask.shape[0] == 0:
+                    
+                self.set_road_mask(roi, width, height)               
+           
+
+            stationary_vehicles = await self.process_track(events,frames,track_enable,roi)
+           
+            scale_stationary_vehicles = await get_scale_stationary_vehicles(stationary_vehicles,width,height)
+        return events, scale_stationary_vehicles
+    
+async def get_scale_stationary_vehicles(stationary_vehicles,width,height):
+    for track_id, data in stationary_vehicles.items():
+        data['box'] = [data['box'][0]/width,data['box'][1]/height,data['box'][2]/width,data['box'][3]/height]
+        data['center'] = (data['center'][0]/width,data['center'][1]/height)
+    return stationary_vehicles
+
+    
+def calculate_average_and_len_non_zero_values(d: dict) -> float:
+    """
+    计算字典中所有非零值的平均值。
+
+    参数:
+        d (dict): 包含值的字典。
+
+    返回:
+        float: 所有非零值的平均值。如果没有非零值，则返回 0.0。
+    """
+    if d == {}:
+        return 0,0
+    non_zero_values = [value for value in d.values() if value != 0]
+    
+    if not non_zero_values:
+        return 0.0 ,0
+        
+    return sum(non_zero_values) / len(non_zero_values) ,len(non_zero_values)  
+
+
+    
+
+if __name__ == "__main__":
+    asyncio.run(test2())

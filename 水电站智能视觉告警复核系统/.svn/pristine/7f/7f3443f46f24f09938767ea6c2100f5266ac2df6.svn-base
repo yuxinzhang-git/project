@@ -1,0 +1,370 @@
+import sys
+import asyncio, time
+import logging
+from datetime import datetime, timezone
+
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import PlainTextResponse
+from starlette.datastructures import UploadFile
+from xsdata.formats.dataclass.parsers import XmlParser
+
+from buffer import AsyncioRingBuffer
+from event_notification_alert import EventNotificationAlert
+from frame import Frame
+from scene import Scene
+from tracker import Tracker
+from enum import Enum
+
+# 配置日志系统
+logger = logging.getLogger(__name__)
+
+# 小模型事件列表
+OCCURS = {'S行人', 'S物体遗留', 'S摩托车', 'S烟火', 'S逆行', 'S停车', 'S行驶缓慢', 'S浓烟', 'S火焰', 'S火花', 'S游泳',
+          'S人员闯入', 'S漏水', 'S漏油', 'S漂浮物', 'S高温'}
+
+# 大模型事件列表
+EVENTS = {'行人', '施工人员', '摩托车', '停车', '拥堵', '烟火', '抛洒物', '逆行', '浓烟', '火焰', '火花', '游泳',
+          '人员闯入', '漏水', '漏油', '漂浮物', '高温'}
+
+
+class Handler:
+    # 复核函数类型
+    class Type(Enum):
+        SYNC = 1  # 同步调用，用于小模型
+        ASYNC = 2  # 异步调用，用于大模型
+
+    def __init__(self, name, cb, htype=Type.ASYNC):
+        self._name = name
+        self._cb = cb
+        self._type = htype
+
+    def handler(self):
+        return self._cb
+
+    def htype(self):
+        return self._type
+
+    async def process(self, *args, **kwargs):
+        result = kwargs.get('result')
+        if result is None:
+            return
+
+        if self._cb:
+            try:
+                events = await self._cb(*args, **kwargs)
+                logger.info(f'检测{self.name()},结果:{events}')
+                if events is not None:
+                    if isinstance(events, set):
+                        if len(events) > 0:
+                            for event in events:
+                                result.AddLabel(event, True)
+                        else:
+                            result.AddLabel(self.name(), False)
+                    if isinstance(events, dict):
+                        for k, v in events.items():
+                            result.AddLabel(k, v)
+                else:
+                    result.AddLabel(self.name(), False)
+            except Exception as e:
+                result.AddLabel(self.name(), False)
+                logger.error(f"{self._name}检测发生未知错误: {e}")
+        else:
+            # 没有注册大模型检测函数,直接设置事件为True
+            result.AddLabel(self.name(), True)
+            print(f'检测{self.name()},结果:None')
+
+    def name(self):
+        return self._name
+
+
+class Env:
+    def __init__(self, name=None):
+        self._name = name
+        self._task = None  # 大模型的任务
+        self._handlers = {}  # 小模型事件响应接口
+        self._handler_map = {}  # 按照告警事件索引
+        # 小模型事件列表
+        self._occurs = {e: False for e in OCCURS}
+        # 大模型告警事件列表
+        self._events = {e: True for e in EVENTS}
+        # 对当前事件进行统计,记录最近一次发生的时间
+        self._stat = {e: 0 for e in EVENTS}
+        # 初始化scene检测接口（使用默认URL）
+        self._scene = Scene(
+            track_url="http://192.168.1.65:5004/track-info",
+            # detect_url="http://192.168.1.65:5004/detect-info",
+            detect_url="http://192.168.1.65:5004/detect-info-sahi",
+            # fire_url="http://192.168.1.65:7001/api/v1/classify",
+            fire_url="http://192.168.1.65:7002/detect-info-patches"
+        )
+        # Label相关的URL配置
+        self._token_url = None
+        self._label_url = None
+        self._alarm_duration = 5  # 大模型抑制时间
+
+        self.app = FastAPI()
+        self.app.post("/alarm")(self.hot_alarm_handler)
+
+    def configure_scene(self, scene_url, yolo_config, occur_enable, alarm_duration):
+        """配置Scene参数"""
+        try:
+            if alarm_duration:
+                self._alarm_duration = alarm_duration
+            # 更新Scene的URL配置
+            if scene_url.get('track_url'):
+                self._scene.track_url = scene_url['track_url']
+                self._scene._tracker = Tracker(self._scene.track_url)
+            if scene_url.get('detect_url'):
+                self._scene.detect_url = scene_url['detect_url']
+            if scene_url.get('fire_url'):
+                self._scene.fire_url = scene_url['fire_url']
+
+            # 配置Label相关的URL
+            if scene_url.get('token_url'):
+                self._token_url = scene_url['token_url']
+            if scene_url.get('label_url'):
+                self._label_url = scene_url['label_url']
+
+            if occur_enable:
+                self._occurs['S行人'] = occur_enable.get('行人', False)
+                # self._occurs['S施工人员'] = occur_enable.get('行人', False)
+                self._occurs['S物体遗留'] = occur_enable.get('抛洒物', False)
+                self._occurs['S摩托车'] = occur_enable.get('摩托车', False)
+                self._occurs['S烟火'] = occur_enable.get('烟火', False)
+                self._occurs['S逆行'] = occur_enable.get('逆行', False)
+                self._occurs['S停车'] = occur_enable.get('停车', False)
+                self._occurs['S行驶缓慢'] = occur_enable.get('拥堵检测', False)
+                self._occurs['S浓烟'] = occur_enable.get('浓烟', False)
+                self._occurs['S火焰'] = occur_enable.get('火焰', False)
+                self._occurs['S火花'] = occur_enable.get('火花', False)
+                self._occurs['S游泳'] = occur_enable.get('游泳', False)
+                self._occurs['S人员闯入'] = occur_enable.get('人员闯入', False)
+                self._occurs['S漏水'] = occur_enable.get('漏水', False)
+                self._occurs['S漏油'] = occur_enable.get('漏油', False)
+                self._occurs['S漂浮物'] = occur_enable.get('漂浮物', False)
+                self._occurs['S高温'] = occur_enable.get('高温', False)
+
+            # 传递yolo配置给Scene
+            self._scene.configure_params(yolo_config)
+            logger.info(f"occur_enabled更新成功{self._occurs}")
+            logger.info(f"Scene配置更新成功")
+            logger.info(f"Track URL: {self._scene.track_url}")
+            logger.info(f"Detect URL: {self._scene.detect_url}")
+            logger.info(f"Fire URL: {self._scene.fire_url}")
+            if self._token_url:
+                logger.info(f"Token URL: {self._token_url}")
+            if self._label_url:
+                logger.info(f"Label URL: {self._label_url}")
+        except Exception as e:
+            logger.error(f"配置Scene时发生错误: {e}")
+            logger.info("使用默认配置")
+
+    def get_token_url(self):
+        """获取Token URL配置"""
+        return self._token_url
+
+    def get_label_url(self):
+        """获取Label URL配置"""
+        return self._label_url
+
+    def occur_enabled(self):
+        # return self._occurs
+        return {occur[1:]: value for occur, value in self._occurs.items()}
+
+    def event_enabled(self):
+        return self._events
+
+    # 根据小模型上报的事件, 确定需要触发的告警复核算法
+    def occur2event(self, occurs, suppression=True):
+        if occurs is None:
+            return None
+
+        ev = {}
+
+        logger.debug(f"self._handlers:{self._handlers}")
+        logger.debug(f"self._events:{self._events}")
+        logger.debug(f"self._stat:{self._stat}")
+        for e in occurs:
+            handlers = self._handlers.get(e, set())
+            # print(f"handlers:{handlers}")
+            for h in handlers:
+                # print(f"h:{h.name()}")
+                if self._events.get(h.name(), False):
+                    ev[h.name()] = self._stat[h.name()]
+
+        # 按照上报时间排序避免饿死
+        ev_sorted = sorted(ev.items(), key=lambda x: x[1])
+
+        # 告警抑制,5分钟内不重复触发告警
+        now = time.time()
+
+        if suppression:
+            return {k for k, v in ev_sorted if now - v > self._alarm_duration * 60}
+
+        return {k for k, v in ev_sorted}
+
+    def done(self):
+        if self._task is not None and self._task.done() is False:
+            return False
+        return True
+
+    # 更新告警统计
+    def store(self, result):
+        labels = result.Labels()
+        if labels is not None:
+            for k, v in self._stat.items():
+                if labels.get(k, False):
+                    self._stat[k] = time.time()
+        logger.debug(f'stat: {self._stat}')
+
+    def create_task(self, task):
+        self._task = asyncio.create_task(task)
+
+    async def track(self, frames, roi, enable):
+        data = {
+            'frames': frames,
+            'roi': roi,
+            'enable': enable,
+        }
+
+        return await self._scene.track_run(**data)
+
+    async def detect(self, frame, roi, enable):
+        data = {
+            'frame': frame,
+            'enable': enable,
+            'roi': roi,
+        }
+
+        return await self._scene.detect_run(**data)
+
+    # 注册小模型的事件处理函数
+    def register(self, occurs, handler):
+        self._handler_map[handler.name()] = handler
+        for e in occurs:
+
+            self._occurs[e] = True
+            if self._handlers.get(e) is None:
+                self._handlers[e] = set()
+            self._handlers[e].add(handler)
+
+    # 根据结果中的标签调用大模型处理函数
+    async def llmprocess(self, *args, **kwargs):
+        result = kwargs.get('result')
+        if result is None:
+            return
+
+        # 避免重复执行
+        proc = set()
+        labels = result.Labels()
+        if labels is not None:
+            for k, v in labels.items():
+                h = self._handler_map.get(k, None)
+                if h is not None and h.handler() is not None and h.htype() == Handler.Type.ASYNC:
+                    proc.add(h)
+
+        # 调用处理函数
+        done = set()
+        for h in proc:
+            if h.handler() not in done:
+                logger.info(f'开始执行LLM检测函数:{h.name()}')
+                done.add(h.handler())
+                await h.process(*args, **kwargs)
+
+    # 同步调用复核
+    async def process(self, *args, **kwargs):
+        result = kwargs.get('result')
+        if result is None:
+            return
+
+        # 避免重复执行
+        proc = set()
+        labels = result.Labels()
+        if labels is not None:
+            for k, v in labels.items():
+                h = self._handler_map.get(k, None)
+                if h is not None and h.handler() is not None and h.htype() == Handler.Type.SYNC:
+                    proc.add(h)
+                    # result.AddLabel(h.name(), True)
+
+        # print('proc:', len(proc), proc)
+
+        # 调用处理函数
+        done = set()
+        for h in proc:
+            if h.handler() not in done:
+                logger.info(f'开始执行复核检测函数:{h.name()}')
+                done.add(h.handler())
+                await h.process(*args, **kwargs)
+
+        # print('done:', len(done), done)
+
+    # 检查是否需要大模型处理
+    def has_async_events(self, *args, **kwargs):
+        result = kwargs.get('result')
+        if result is None:
+            return False
+
+        labels = result.Labels()
+        if labels is not None:
+            for k, v in labels.items():
+                h = self._handler_map.get(k, None)
+                if h is not None and h.handler() is not None and h.htype() == Handler.Type.ASYNC:
+                    return True
+
+        return False
+
+    # 清除大模型需要处理的事件,避免误报
+    def llm_event_reset(self, *args, **kwargs):
+        result = kwargs.get('result')
+        if result is None:
+            return
+
+        labels = result.Labels()
+        if labels is not None:
+            for k, v in labels.items():
+                h = self._handler_map.get(k, None)
+                if h is not None and h.handler() is not None and h.htype() == Handler.Type.ASYNC:
+                    result.AddLabel(h.name(), False)
+
+    async def run_server(self):
+        # 多个摄像头的时候 端口根据 stream-1-1 去增加
+        # stream-1-2 : 15001
+        config = uvicorn.Config(self.app, host="0.0.0.0", port=15000, log_level="info")
+        server = uvicorn.Server(config)
+        await server.serve()
+
+    async def hot_alarm_handler(self, request: Request):
+        logger.info("receive alarm")
+
+        form = await request.form()
+        value = form.get("TMPA")
+        if value is None:
+            return PlainTextResponse("OK")
+        if isinstance(value, str):
+            xml_data: str = value
+        else:
+            return PlainTextResponse("OK")
+
+        parser = XmlParser()
+        notifiy = parser.from_string(xml_data, EventNotificationAlert)
+        occur = notifiy.date_time
+        #
+        for key, value in form.multi_items():
+            if isinstance(value, UploadFile):
+                file: UploadFile = value
+                data = await file.read()
+                if key == "backgroundPic":
+                    await self._scene.hot_alarm.push(Frame(data=data, occur=occur))
+
+        return PlainTextResponse("OK")
+
+
+async def test_env():
+    env = Env()
+    env.register(['行人'], Handler('test', None))
+
+
+if __name__ == '__main__':
+    asyncio.run(test_env())

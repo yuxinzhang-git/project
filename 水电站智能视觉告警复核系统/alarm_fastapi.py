@@ -1,0 +1,189 @@
+from typing import Dict, Any
+
+import aiohttp
+import base64
+from xsdata.formats.dataclass.parsers import XmlParser
+import os
+import logging
+from aiohttp import ClientTimeout
+from fastapi import FastAPI, Request
+from starlette.datastructures import UploadFile
+from fastapi.responses import PlainTextResponse
+
+from event_notification_alert import EventNotificationAlert
+
+# 日志配置
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("alarm_server")
+
+# 创建保存目录
+# os.makedirs("/data3/lifucai", exist_ok=True)
+
+app = FastAPI()
+
+
+@app.post("/alarm")
+async def alarm_handler(request: Request):
+    logger.info("handle alarm")
+    notifiy = None
+    form = None
+    try:
+        form = await request.form()
+        # logger.info(f"Form keys: {list(form.keys())}")
+        # 获取 XML
+        xml_data = form.get("TMPA")
+        if xml_data:
+            parser = XmlParser()
+            notifiy = parser.from_string(xml_data, EventNotificationAlert)
+            # logger.debug(f"notifiy:{notifiy}")
+            # logger.info("XML parsed success")
+        else:
+            return PlainTextResponse("OK")
+    except Exception as e:
+        logger.exception(f"Failed to parse XML: {e}")
+        return PlainTextResponse("OK")
+
+    # 遍历上传文件
+    try:
+        for key, value in form.multi_items():
+            # logger.info(f"Received file field={key}, "f"value={value}")
+            # logger.info(f"{key} -> {type(value)}")
+            if isinstance(value, UploadFile):
+                file: UploadFile = value
+                logger.info(f"Received file field={key}, "f"filename={file.filename}")
+                data = await file.read()
+                occur = None
+                width = None
+                height = None
+                occur = notifiy.date_time
+                # logger.info(f"{occur} -> {type(occur)}")
+                if key == "backgroundPic":
+                    if notifiy.visible_light_background_image_resolution:
+                        width = (notifiy.visible_light_background_image_resolution.width)
+                        height = (notifiy.visible_light_background_image_resolution.height)
+                        # logger.info(f"{str(data)}")
+                        await push_alarm("", "", "", file2base64(data=data), occur, width, height)
+                elif key == "thermalPic":
+                    if notifiy.thermal_background_image_resolution:
+                        width = (notifiy.thermal_background_image_resolution.width)
+                        height = (notifiy.thermal_background_image_resolution.height)
+                        # logger.info(f"{str(data)}")
+                        await push_alarm("", "", "", file2base64(data=data), occur, width, height)
+    except Exception as e:
+        logger.exception(f"Failed to process file: {e}")
+
+    return PlainTextResponse("OK")
+
+
+def file2base64(filepath=None, data=None):
+    if filepath is not None:
+        with open(filepath, 'rb') as file:
+            data = file.read()
+            return base64.b64encode(data).decode('utf-8')
+    if data is not None:
+        return base64.b64encode(data).decode('utf-8')
+    return None
+
+
+async def push_alarm(stcd, device, event, data, occur, width, height):
+    # if frame is None:
+    #     frame = {}
+    logger.info(f"push alarm {stcd} {device} {event}")
+
+    # 告警抑制逻辑
+    # alarm_key = f"{stcd}_{device}_{event}"
+    # now = time.time()
+
+    # 检查是否在抑制时间内
+    # if alarm_key in self._alarm_stat:
+    #     last_time = self._alarm_stat[alarm_key]
+    #     if now - last_time < self.alarm_duration * 60:
+    #         logger.info(f"告警抑制: {event} 在 {self.alarm_duration} 分钟内已上报过，跳过本次上报")
+    #         return
+
+    # camera_string = self.camera.replace('+', '') + '_' + event + '_' + self.name
+    camera_string = "IPC210_行人_stream-1-1"
+
+    data = {
+        # 'Stcd': stcd,
+        'Stcd': '1001',
+        'Device': device,
+        'Camera': camera_string,
+        'AlarmType': event,
+        'Data': data,
+        'Occur': occur,
+        'Result': {
+            'Files': [{
+                'Width': width,
+                'Height': height,
+                'Regions': []
+            }]
+        }
+    }
+
+    # self.alarm_url
+    ret = await async_http_post("http://192.168.1.101:3001/xzhydro/api/alarm/push", json=data,
+                                headers={"Content-Type": "application/json"}, timeout=5)
+    logger.info(f'got response:{ret}')
+
+    # 更新上报时间
+    # self._alarm_stat[alarm_key] = now
+
+    return
+
+
+# -----------------
+# 异步 POST 请求封装
+# -----------------
+
+async def async_http_post(url: str, json: Dict[str, Any] = None, headers: Dict[str, Any] = None, timeout: int = 30) -> \
+Dict[str, Any]:
+    """
+    封装的异步 HTTP POST 请求函数。
+
+    参数:
+        url (str): 目标 URL。
+        data (Dict[str, Any], optional): 要作为 JSON 提交的数据。默认为 None。
+
+    返回:
+        Dict[str, Any]: 包含 'status' (int) 和 'data' (Any) 的字典。
+    """
+    try:
+
+        # 创建 ClientTimeout 对象，设置总超时时间
+        timeout = ClientTimeout(total=timeout)
+
+        # 使用 aiohttp.ClientSession 启动一个客户端会话
+        async with aiohttp.ClientSession() as session:
+            # 使用 json 参数直接发送 JSON 格式的数据
+            async with session.post(url, json=json, headers=headers, timeout=timeout) as response:
+                status = response.status
+
+                if 200 <= status < 300:
+                    # 如果响应是 JSON 格式，则异步读取 JSON 内容
+                    data = await response.json()
+                    return {"status": status, "data": data}
+                else:
+                    # 对于非成功状态码，读取文本内容作为错误信息
+                    error_text = await response.text()
+                    # print(f"请求失败: 状态码 {status}, 错误信息: {error_text}")
+                    return {"status": status, "data": {"error": f"HTTP Error {status}"}}
+
+    except aiohttp.ClientConnectorError as e:
+        # print(f"连接错误: {e}", file=sys.stderr)
+        return {"status": 0, "data": {"error": f"Client Connector Error: {e}"}}
+    except aiohttp.ClientError as e:
+        # print(f"请求发生其他错误: {e}", file=sys.stderr)
+        return {"status": 0, "data": {"error": f"AIOHTTP Client Error: {e}"}}
+    except Exception as e:
+        # print(f"发生未知错误: {e}", file=sys.stderr)
+        return {"status": -1, "data": {"error": f"Unknown Error: {e}"}}
+
+
+if __name__ == "__main__":
+    # Flask 默认 debug=True 会自动重载
+    # app.run(host="0.0.0.0", port=15000, debug=True)
+
+    import uvicorn
+
+    uvicorn.run("alarm_fastapi:app", host="0.0.0.0", port=15000, reload=True)

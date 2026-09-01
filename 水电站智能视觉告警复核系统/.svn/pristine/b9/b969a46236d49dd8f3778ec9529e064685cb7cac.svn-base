@@ -1,0 +1,721 @@
+import asyncio
+import os
+import uuid
+import aio
+import cv2
+import requests
+import logging
+from aio import Session, file2base64
+from frame import Frame
+from result import Result, Object
+from reward import Reward
+from label import get_cls_token, get_probs
+import re
+
+
+# 配置日志系统
+logger = logging.getLogger(__name__)
+
+# version = '2.2'
+# port = 3014
+# prefix = '/xzsta/llm'
+
+version = '2.2'
+port = 8000
+# port = 8088
+prefix = ''
+
+def fire_detect(img64):
+    resp = requests.post('http://192.168.1.65:7002/detect-info', json={"conf": 0.3, 'image':img64})
+    # print(resp.text)
+    return [e for e in resp.json()['results'] if e['class_name'] == 'Fire' or e['class_name'] == 'Smoke']
+
+# 缺省处理
+async def default_handler(*args, **kwargs):
+    pass
+
+# 烟火事件处理
+async def fire_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return
+
+    # # 查找外切矩形
+    # x1,y1,x2,y2 = 1.0,1.0,0.,0.
+    # for obj in result.GetObjects('fire'):
+    #     xmin,ymin,xmax,ymax = obj.rectangle()
+    #     x1,y1,x2,y2 = min(xmin,x1),min(ymin,y1),max(xmax,x2),max(ymax,y2)
+
+    # # 以外切矩形的中心为中心，宽高至少因为原图宽高的1/2
+    # w,h = x2-x1,y2-y1
+    # center = x1+w/2,y1+h/2
+    # w,h = max(w,0.5),max(h,0.5)
+    debris_objects = result.GetObjects('fire')
+    if not debris_objects:
+        return
+    
+    # 收集所有识别框，计算最大边界
+    all_xmin, all_ymin = float('inf'), float('inf')
+    all_xmax, all_ymax = float('-inf'), float('-inf')
+    
+    for obj in debris_objects:
+        xmin, ymin, xmax, ymax = obj.rectangle()
+        all_xmin = min(all_xmin, xmin)
+        all_ymin = min(all_ymin, ymin)
+        all_xmax = max(all_xmax, xmax)
+        all_ymax = max(all_ymax, ymax)
+    
+    # 计算所有框的外接矩形的中心和尺寸
+    center = [all_xmin + (all_xmax - all_xmin) / 2, all_ymin + (all_ymax - all_ymin) / 2]
+    w, h = all_xmax - all_xmin, all_ymax - all_ymin
+    area = w * h
+    
+    
+    # 按比例扩展，使目标在裁剪图像中占合适比例（约25%）
+    target_ratio = 0.25
+    expand_factor = 1.0 / target_ratio  # 扩展因子为4.0
+    
+    # 计算扩展后的宽高
+    w_expanded = w * expand_factor
+    h_expanded = h * expand_factor
+    
+    # 保持宽高比，取较大值确保目标完整显示
+    max_dim = max(w_expanded, h_expanded)
+    w, h = max_dim, max_dim
+    
+    # 设置最小裁剪尺寸，避免裁剪区域过小
+    w, h = max(w, 0.15), max(h, 0.15)
+    # 设置最大裁剪尺寸，避免超出图像范围
+    w, h = min(w, 1.0), min(h, 1.0)
+
+    
+
+    
+
+
+    
+
+    found = {
+        '烟火': False,
+        # '抛洒物': False,
+    }
+    
+    sess = Session(version=version, server="127.0.0.1" ,port=port, prefix=prefix)
+    v = await sess.Text('''
+    任务目标：请判断图片中是否有火焰、烟雾或燃烧现象。请排除车辆本身的刹车灯和反光。
+
+    输出格式：请输出你的分析逻辑,最后以 "火: [是/否] conf:[置信度]，烟雾: [是/否] conf:[置信度]，强光光源: [是/否] conf:[置信度]" 的格式给出判断结果。
+    
+
+    
+    请根据你的观察，严格区分燃烧的火焰和警示用的强光。
+        
+    ''', frame.crop64(center=center,dim=[w,h]))
+    # v = await sess.Text('请判断图片中是否有火焰、烟雾或燃烧现象。请排除车辆本身的刹车灯和反光', frame.crop64(center=center,dim=[w,h]))
+    # v = await sess.Text('''
+    # 任务目标：请判断图片中是否有火焰、烟雾或燃烧现象。请排除车辆本身的刹车灯和反光。
+
+    # 输出格式：请直接以 "火: [是/否]，烟雾: [是/否]，强光光源: [是/否]" 的格式给出判断结果。
+    
+
+    # 关键区分标准：
+    # 1. 火焰（Fire）：形状不规则，颜色高亮橙黄，边缘模糊，有热气腾腾/燃烧的动态视觉效果。
+    # 2. 强光光源（Bright Light Source）：形状通常是规则的几何形状（圆形、矩形），边缘清晰，发光均匀且静态，通常来自车辆部件（如尾灯、工作灯）。
+
+    # 请根据你的观察，严格区分燃烧的火焰和警示用的强光。
+        
+    # ''', frame.crop64(center=center,dim=[w,h]))
+    # v = await sess.Text('请仔细判断图片中除了车辆尾灯之外，是否出现火焰、烟雾或燃烧现象。请排除车辆本身的刹车灯和反光', frame.crop64(center=center,dim=[w,h]))
+    # cv2.imwrite(f'debug/{v}{uuid.uuid4()}.jpg', frame.crop(center=center,dim=[w,h]))
+
+    # 保存图片和回答到markdown文件
+    import os
+    from datetime import datetime
+    import base64
+
+    debug_dir = 'debug'
+    if not os.path.exists(debug_dir):
+        os.makedirs(debug_dir)
+
+    # 生成唯一的文件名
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_id = uuid.uuid4().hex[:8]
+    image_filename = f"{debug_dir}/smoke_detect_{timestamp}_{unique_id}.jpg"
+    markdown_filename = f"{debug_dir}/smoke_detection_results.md"
+
+    # 保存图片文件
+    cropped_img = frame.crop(center=center, dim=[w, h])
+    cv2.imwrite(image_filename, cropped_img)
+
+    
+
+    # 写入或追加到markdown文件
+    with open(markdown_filename, 'a', encoding='utf-8') as md_file:
+            # md_file.write(f"\n## 烟火检测记录 - {timestamp}_{unique_id}\n\n")
+            # md_file.write(f"### 检测时间\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            # md_file.write(f"### 检测对象\n{name}\n\n")
+            md_file.write(f"### 发送的图片\n![检测图片](Y:/data3/xzsta/python/debug/smoke_detect_{timestamp}_{unique_id}.jpg)\n\n")
+            # md_file.write(f"### 题词内容\n```\n任务目标：请你仔细分析图片，判断其中是否出现了火（火焰）或烟雾。同时，你需要区分火焰与车辆尾灯、工作灯、反光等强光光源。\n\n输出格式：请直接以 \"火: [是/否]，烟雾: [是/否]，强光光源: [是/否]\" 的格式给出判断结果。\n\n关键区分标准：\n1. 火焰（Fire）：形状不规则，颜色高亮橙黄，边缘模糊，有热气腾腾/燃烧的动态视觉效果。\n2. 强光光源（Bright Light Source）：形状通常是规则的几何形状（圆形、矩形），边缘清晰，发光均匀且静态，通常来自车辆部件（如尾灯、工作灯）。\n\n请根据你的观察，严格区分燃烧的火焰和警示用的强光。\n```\n\n")
+            md_file.write(f"### 模型回答\n```\n{v}\n```\n\n")
+            md_file.write("---\n\n")
+
+    logger.info(f"烟火检测: {name}:\n{v}")
+    logger.info(f"图片和回答已保存到: {image_filename} 和 {markdown_filename}")
+    reward = Reward(v)
+    if reward.yes():
+        found['烟火'] = True
+        # cv2.imwrite(f'debug/ture{uuid.uuid4()}.jpg', frame.crop(center=center,dim=[w,h]))
+    else:
+        found['烟火'] = False
+        # cv2.imwrite(f'debug/false{v}{uuid.uuid4()}.jpg', frame.crop(center=center,dim=[w,h]))
+    # if '浓烟' in v or '黑烟' in v or '火焰' in v or '火光' in v or '火堆' in v or '燃烧' in v or '火苗' in v or '烟雾' in v:
+    #     found['烟火'] = True
+    # if '无法' in v:
+    #     found['烟火'] = False
+    # else:
+    #     # 生成唯一的文件名
+    #     img_uuid = uuid.uuid4()
+    #     img_filename = f'debug/{img_uuid}.jpg'
+    #     cv2.imwrite(img_filename, frame.crop(center=center,dim=[w,h]))
+        
+        # 写入markdown文件
+        # with open('烟火误报大模型1.8qa.md', 'a', encoding='utf-8') as f:
+        #     f.write(f'## {name}\n\n')
+        #     f.write(f'**时间**: {img_uuid}\n\n')
+        #     f.write(f'**图片**:\n\n')
+        #     f.write(f'![{name}]({img_filename})\n\n')
+        #     f.write(f'**大模型描述**:\n\n')
+        #     f.write(f'{v}\n\n')
+        #     f.write('---\n\n')
+        #     f.flush()
+    # img_uuid = uuid.uuid4()
+    # img_filename = f'debug/{img_uuid}.jpg'
+    # if not found['烟火']:
+    #     cv2.imwrite(img_filename, frame.crop(center=center,dim=[w,h]))
+        # with open('烟火误报大模型1.8qa.md', 'a', encoding='utf-8') as f:
+        #         f.write(f'## {name}\n\n')
+        #         f.write(f'**时间**: {img_uuid}\n\n')
+        #         f.write(f'**图片**:\n\n')
+        #         if not found['烟火']:
+        #             f.write(f'***未检测到烟火***:\n\n')
+        #         f.write(f'![{name}]({img_filename})\n\n')
+        #         f.write(f'**大模型描述**:\n\n')
+        #         f.write(f'{v}\n\n')
+        #         f.write('---\n\n')
+        #         f.flush()
+    # if '箱子' in v or '纸箱' in v or '盒子' in v or '垃圾' in v:
+    #     found['抛洒物'] = True
+    #     cv2.imwrite(f'debug/抛撒物{uuid.uuid4()}.jpg', frame.crop(center=center,dim=[w,h]))
+    
+
+    # img = frame.crop(center=center, dim=[w,h])
+    # fname = uuid.uuid4()
+    # cv2.imwrite(f'debug/{fname}.jpg', img)
+
+    # with open('desc.txt', 'a') as f:
+    #     f.write(f'{name} - {fname}: {v}\n')
+    #     f.flush()
+    
+    return found
+
+# 行人事件处理
+async def person_handler(*args, **kwargs):
+    # output_dir = './output_person'
+    # if not os.path.exists(output_dir):
+    #     os.makedirs(output_dir)
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return {'行人':False, '施工人员':False}
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return {'行人':False, '施工人员':False}
+
+    found = {'行人':False, '施工人员':False}
+    for person in result.GetObjects('person'):
+        # print(f"Object details - Label: {person.label()}, Center: {person.center()}, Rectangle: {person.rectangle()}")
+        # print("person",person)
+        sess = Session(version=version, port=port, prefix=prefix)
+        # bbox = person.rectangle()
+        # center = [bbox[0]+(bbox[2]-bbox[0])/2,bbox[1]+(bbox[3]-bbox[1])/2]
+        # img64 = frame.crop64(person.rectangle(),extend=0.1,resize=(512,512))
+
+        # img = frame.crop(person.rectangle(),extend=0.1)
+        # cv2.imwrite(f'output_person2/{uuid.uuid4()}.jpg', img)
+        # global k
+        # k += 1
+        # img = frame.crop(person.rectangle(),extend=0.1)
+        # imgname = '%04d.jpg' % k
+        # cv2.imwrite(f'output/{imgname}', img)
+        # print('write jpg img')
+        # while True:
+        #     pass
+
+        img64 = frame.crop64(person.rectangle(),extend=0.2,resize=(512,512))
+        v = await sess.Text('描述一下图片中人物的上半身穿着', img64)
+        logger.info(f"行人检测: {v}")
+        if (('橙' in v or '黄' in v or '红' in v or '粉' in v or '绿' in v) and ('反光' in v or '背心' in v or '马甲' in v)) or ('消防服' in v) or ('制服' in v) or ('警服' in v) or ('头盔' in v) or ('安全帽' in v):
+            found['施工人员'] = True
+            # img = frame.crop(person.rectangle(),extend=0.1)
+            # cv2.imwrite(f'output_person2/施工人员{v}{uuid.uuid4()}.jpg', img)
+        else:
+            found['行人'] = True
+            # img = frame.crop(person.rectangle(),extend=0.1)
+            # cv2.imwrite(f'output_person2/行人{v}{uuid.uuid4()}.jpg', img)
+        
+      
+
+        if found['行人'] and found['施工人员']:
+            return found
+
+    return found
+
+# 抛洒物事件处理
+async def debris_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return
+
+    # 查找外切矩形
+    debris_objects = result.GetObjects('debris')
+    if not debris_objects:
+        return
+    
+    # 收集所有识别框，计算最大边界
+    all_xmin, all_ymin = float('inf'), float('inf')
+    all_xmax, all_ymax = float('-inf'), float('-inf')
+    
+    for obj in debris_objects:
+        xmin, ymin, xmax, ymax = obj.rectangle()
+        all_xmin = min(all_xmin, xmin)
+        all_ymin = min(all_ymin, ymin)
+        all_xmax = max(all_xmax, xmax)
+        all_ymax = max(all_ymax, ymax)
+    
+    # 计算所有框的外接矩形的中心和尺寸
+    center = [all_xmin + (all_xmax - all_xmin) / 2, all_ymin + (all_ymax - all_ymin) / 2]
+    w, h = all_xmax - all_xmin, all_ymax - all_ymin
+    area = w * h
+    print(f"合并后的区域面积: {area}")
+    
+    # 按比例扩展，使目标在裁剪图像中占合适比例（约25%）
+    target_ratio = 0.25
+    expand_factor = 1.0 / target_ratio  # 扩展因子为4.0
+    
+    # 计算扩展后的宽高
+    w_expanded = w * expand_factor
+    h_expanded = h * expand_factor
+    
+    # 保持宽高比，取较大值确保目标完整显示
+    max_dim = max(w_expanded, h_expanded)
+    w, h = max_dim, max_dim
+    
+    # 设置最小裁剪尺寸，避免裁剪区域过小
+    w, h = max(w, 0.15), max(h, 0.15)
+    # 设置最大裁剪尺寸，避免超出图像范围
+    w, h = min(w, 1.0), min(h, 1.0)
+    
+    # 只调用一次大模型
+    found = {
+        '抛洒物': False,
+    }
+    
+    sess = Session(version=version, port=port, prefix=prefix)
+    v = await sess.Text('照片中有什么', frame.crop64(center=center, dim=[w, h]))
+    
+    cv2.imwrite(f'debug/{v}{uuid.uuid4()}.jpg', frame.crop(center=center, dim=[w, h]))
+    logger.info(f"抛洒物检测: {name}:\n{v}")
+    
+    if '箱子' in v or '纸箱' in v or '盒子' in v or '垃圾' in v:
+        found['抛洒物'] = True
+        # cv2.imwrite(f'debug/抛撒物{uuid.uuid4()}.jpg', frame.crop(center=center, dim=[w, h]))
+    
+    return found
+
+    # 以外切矩形的中心为中心，宽高至少因为原图宽高的1/2
+    # w,h = x2-x1,y2-y1
+    # center = x1+w/2,y1+h/2
+    # print(w,h)
+    # w,h = max(w,0.3),max(h,0.3)
+
+    
+
+    
+
+
+    
+
+    
+
+# 摩托车事件处理
+async def motor_handler(*args, **kwargs):
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return {'摩托车':False}
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return {'摩托车':False}
+
+    found = {'摩托车':False}
+    for motor in result.GetObjects('motorcycle'):
+        # print(f"Object details - Label: {motor.label()}, Center: {motor.center()}, Rectangle: {motor.rectangle()}")
+        sess = Session(version=version, port=port, prefix=prefix)
+        img64 = frame.crop64(motor.rectangle(), extend=0.2, resize=(512,512))
+        v = await sess.Text('描述一下图片中的车辆类型', img64)
+        logger.info(f"摩托车检测: {v}")
+        if '摩托车' in v or '电动车' in v or '两轮车' in v or '三轮车' in v:
+            found['摩托车'] = True
+            return found
+
+    return found
+
+# 摩托车多标签处理
+async def motor_label_handler(*args, **kwargs):
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return {'摩托车':False}
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return {'摩托车':False}
+
+    # 获取env来获取配置的URL
+    env = kwargs.get('env')
+    token_url = env.get_token_url() if env else None
+    label_url = env.get_label_url() if env else None
+
+    found = {'摩托车':False}
+    for motor in result.GetObjects('motorcycle'):
+        img64 = frame.crop64(motor.rectangle(),extend=0.2)
+        # img = frame.crop(motor.rectangle(),extend=0.2)
+        # cv2.imwrite(f'debug/{uuid.uuid4()}.jpg', img)
+        cls_token = get_cls_token(img64=img64, token_url=token_url)
+        probs = get_probs(cls_token, label_url=label_url)
+        if len(probs) > 4 and probs[4] > 0.95:
+            found['摩托车'] = True
+            return found
+
+    return found
+
+# 多标签模型过滤
+async def person_label_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return {'行人':False, '施工人员':False}
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return {'行人':False, '施工人员':False}
+
+    # 获取env来获取配置的URL
+    env = kwargs.get('env')
+    token_url = env.get_token_url() if env else None
+    label_url = env.get_label_url() if env else None
+
+    found = {'行人':False, '施工人员':False}
+    for person in result.GetObjects('person'):
+        img64 = frame.crop64(person.rectangle(),extend=0.2)
+        cls_token = get_cls_token(img64=img64, token_url=token_url)
+        probs = get_probs(cls_token, label_url=label_url)
+        # print(name, probs)
+        if probs[0] > 0.95 and probs[0] > probs[1]:
+            found['行人'] = True
+        if probs[1] > 0.95 and probs[1] > probs[0]:
+            found['施工人员'] = True
+        if found['行人'] and found['施工人员']:
+            return found
+
+    return found
+
+# 浓烟事件处理
+async def smoke_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        return
+    frame = kwargs.get('frame')
+    if frame is None:
+        return
+
+    smoke_objects = result.GetObjects('smoke')
+    if not smoke_objects:
+        return
+
+    all_xmin, all_ymin = float('inf'), float('inf')
+    all_xmax, all_ymax = float('-inf'), float('-inf')
+    for obj in smoke_objects:
+        xmin, ymin, xmax, ymax = obj.rectangle()
+        all_xmin = min(all_xmin, xmin)
+        all_ymin = min(all_ymin, ymin)
+        all_xmax = max(all_xmax, xmax)
+        all_ymax = max(all_ymax, ymax)
+
+    center = [all_xmin + (all_xmax - all_xmin) / 2, all_ymin + (all_ymax - all_ymin) / 2]
+    w, h = all_xmax - all_xmin, all_ymax - all_ymin
+    target_ratio = 0.25
+    expand_factor = 1.0 / target_ratio
+    w_expanded = w * expand_factor
+    h_expanded = h * expand_factor
+    max_dim = max(w_expanded, h_expanded)
+    w, h = max_dim, max_dim
+    w, h = max(w, 0.15), max(h, 0.15)
+    w, h = min(w, 1.0), min(h, 1.0)
+
+    found = {'浓烟': False}
+    sess = Session(version=version, port=port, prefix=prefix)
+    v = await sess.Text('''
+任务目标：请判断图片中是否有浓密的大面积烟雾。请排除云雾、水汽和正常天气现象。
+
+输出格式：请输出分析过程，最后以 "浓烟: [是/否] conf:[置信度]" 的格式给出判断结果。
+''', frame.crop64(center=center, dim=[w, h]))
+
+    logger.info(f"浓烟检测: {name}:\n{v}")
+    reward = Reward(v)
+    if reward.yes():
+        found['浓烟'] = True
+    return found
+
+# 火焰事件处理
+async def flame_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        return
+    frame = kwargs.get('frame')
+    if frame is None:
+        return
+
+    flame_objects = result.GetObjects('flame')
+    if not flame_objects:
+        return
+
+    all_xmin, all_ymin = float('inf'), float('inf')
+    all_xmax, all_ymax = float('-inf'), float('-inf')
+    for obj in flame_objects:
+        xmin, ymin, xmax, ymax = obj.rectangle()
+        all_xmin = min(all_xmin, xmin)
+        all_ymin = min(all_ymin, ymin)
+        all_xmax = max(all_xmax, xmax)
+        all_ymax = max(all_ymax, ymax)
+
+    center = [all_xmin + (all_xmax - all_xmin) / 2, all_ymin + (all_ymax - all_ymin) / 2]
+    w, h = all_xmax - all_xmin, all_ymax - all_ymin
+    target_ratio = 0.25
+    expand_factor = 1.0 / target_ratio
+    max_dim = max(w * expand_factor, h * expand_factor)
+    w, h = max_dim, max_dim
+    w, h = max(w, 0.15), max(h, 0.15)
+    w, h = min(w, 1.0), min(h, 1.0)
+
+    found = {'火焰': False}
+    sess = Session(version=version, port=port, prefix=prefix)
+    v = await sess.Text('''
+任务目标：请判断图片中是否有明显的火焰。请排除车辆刹车灯、反光和警示灯。
+
+输出格式：请输出分析过程，最后以 "火焰: [是/否] conf:[置信度]" 的格式给出判断结果。
+''', frame.crop64(center=center, dim=[w, h]))
+
+    logger.info(f"火焰检测: {name}:\n{v}")
+    reward = Reward(v)
+    if reward.yes():
+        found['火焰'] = True
+    return found
+
+# 火花事件处理
+async def spark_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        return
+    frame = kwargs.get('frame')
+    if frame is None:
+        return
+
+    spark_objects = result.GetObjects('spark')
+    if not spark_objects:
+        return
+
+    all_xmin, all_ymin = float('inf'), float('inf')
+    all_xmax, all_ymax = float('-inf'), float('-inf')
+    for obj in spark_objects:
+        xmin, ymin, xmax, ymax = obj.rectangle()
+        all_xmin = min(all_xmin, xmin)
+        all_ymin = min(all_ymin, ymin)
+        all_xmax = max(all_xmax, xmax)
+        all_ymax = max(all_ymax, ymax)
+
+    center = [all_xmin + (all_xmax - all_xmin) / 2, all_ymin + (all_ymax - all_ymin) / 2]
+    w, h = all_xmax - all_xmin, all_ymax - all_ymin
+    target_ratio = 0.25
+    expand_factor = 1.0 / target_ratio
+    max_dim = max(w * expand_factor, h * expand_factor)
+    w, h = max_dim, max_dim
+    w, h = max(w, 0.15), max(h, 0.15)
+    w, h = min(w, 1.0), min(h, 1.0)
+
+    found = {'火花': False}
+    sess = Session(version=version, port=port, prefix=prefix)
+    v = await sess.Text('''
+任务目标：请判断图片中是否有焊接火花、切割火花或电气火花。请排除灯光反射和镜头光晕。
+
+输出格式：请输出分析过程，最后以 "火花: [是/否] conf:[置信度]" 的格式给出判断结果。
+''', frame.crop64(center=center, dim=[w, h]))
+
+    logger.info(f"火花检测: {name}:\n{v}")
+    reward = Reward(v)
+    if reward.yes():
+        found['火花'] = True
+    return found
+
+# 游泳事件处理
+async def swimming_handler(*args, **kwargs):
+    result = kwargs.get('result')
+    if result is None:
+        return {'游泳': False}
+    frame = kwargs.get('frame')
+    if frame is None:
+        return {'游泳': False}
+
+    found = {'游泳': False}
+    for swimmer in result.GetObjects('swimming'):
+        sess = Session(version=version, port=port, prefix=prefix)
+        img64 = frame.crop64(swimmer.rectangle(), extend=0.2, resize=(512, 512))
+        v = await sess.Text('请判断图片中的人是否在游泳或正在水中', img64)
+        logger.info(f"游泳检测: {v}")
+        if '游泳' in v or '水中' in v or '溺水' in v:
+            found['游泳'] = True
+            return found
+    return found
+
+# 人员闯入事件处理
+async def intrusion_handler(*args, **kwargs):
+    result = kwargs.get('result')
+    if result is None:
+        return {'人员闯入': False}
+    frame = kwargs.get('frame')
+    if frame is None:
+        return {'人员闯入': False}
+
+    found = {'人员闯入': False}
+    for person in result.GetObjects('person'):
+        sess = Session(version=version, port=port, prefix=prefix)
+        img64 = frame.crop64(person.rectangle(), extend=0.2, resize=(512, 512))
+        v = await sess.Text('描述图片中人物的位置和周围环境，判断此人是否在不应出现的危险或受限区域内', img64)
+        logger.info(f"人员闯入检测: {v}")
+        if '闯入' in v or '禁区' in v or '危险区域' in v or '受限' in v:
+            found['人员闯入'] = True
+            return found
+    return found
+
+# 漏水事件处理（大模型）
+async def water_leak_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        return
+    frame = kwargs.get('frame')
+    if frame is None:
+        return
+
+    found = {'漏水': False}
+    sess = Session(version=version, port=port, prefix=prefix)
+    v = await sess.Text('''
+任务目标：请判断图片中是否有漏水、渗水或水管破裂导致的积水现象。
+
+输出格式：请输出分析过程，最后以 "漏水: [是/否] conf:[置信度]" 的格式给出判断结果。
+''', frame.crop64(center=[0.5, 0.5], dim=[1.0, 1.0]))
+
+    logger.info(f"漏水检测: {name}:\n{v}")
+    reward = Reward(v)
+    if reward.yes():
+        found['漏水'] = True
+    return found
+
+# 漏油事件处理（大模型）
+async def oil_leak_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        return
+    frame = kwargs.get('frame')
+    if frame is None:
+        return
+
+    found = {'漏油': False}
+    sess = Session(version=version, port=port, prefix=prefix)
+    v = await sess.Text('''
+任务目标：请判断图片中是否有漏油、油渍或油污积聚现象。
+
+输出格式：请输出分析过程，最后以 "漏油: [是/否] conf:[置信度]" 的格式给出判断结果。
+''', frame.crop64(center=[0.5, 0.5], dim=[1.0, 1.0]))
+
+    logger.info(f"漏油检测: {name}:\n{v}")
+    reward = Reward(v)
+    if reward.yes():
+        found['漏油'] = True
+    return found
+
+# 漂浮物事件处理（大模型）
+async def floating_debris_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        return
+    frame = kwargs.get('frame')
+    if frame is None:
+        return
+
+    found = {'漂浮物': False}
+    sess = Session(version=version, port=port, prefix=prefix)
+    v = await sess.Text('''
+任务目标：请判断图片中水面上是否有异常的漂浮物，如垃圾、浮萍、藻类或其他异物。
+
+输出格式：请输出分析过程，最后以 "漂浮物: [是/否] conf:[置信度]" 的格式给出判断结果。
+''', frame.crop64(center=[0.5, 0.5], dim=[1.0, 1.0]))
+
+    logger.info(f"漂浮物检测: {name}:\n{v}")
+    reward = Reward(v)
+    if reward.yes():
+        found['漂浮物'] = True
+    return found
+
+async def test_person():
+    frame = None
+    with open('person.jpg', 'rb') as f:
+        frame = Frame(data=f.read())
+    result = Result()
+    w,h = 1622,911
+    x1,y1,x2,y2 = 441,416,616,721
+    result.AddObject(Object(label='person', xmin=x1/w,ymin=y1/h,xmax=x2/w,ymax=y2/h))
+    await person_handler(frame=frame, result=result)
+
+async def test_fire():
+    frame = None
+    with open('fire.png', 'rb') as f:
+        frame = Frame(data=f.read())
+    result = Result()
+    w,h = 1917,899
+    x1,y1 = 611,440
+    result.AddObject(Object(label='停车', center=(x1/w,y1/h)))
+    await fire_handler(frame=frame, result=result)
+
+if __name__ == '__main__':
+    asyncio.run(test_fire())
