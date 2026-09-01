@@ -1,22 +1,30 @@
-# Project Workspace
+# 项目总览
 
-This repository is a workspace that contains two related but independent AI projects.
+这个仓库是一个工作区，里面收纳了几个相互独立的子项目。它们主题不同，但都围绕自动化、视觉处理和机器人控制展开。
 
-## Projects
+## 子项目
 
-| Path | Purpose | Best entry point |
+| 路径 | 简介 | 推荐入口 |
 | --- | --- | --- |
-| `XingClaw-standalone/` | A standalone Python AI coding assistant framework with a unified LLM API layer, agent loop, CLI, and Feishu IM bridge. | `XingClaw-standalone/START_HERE.md` |
-| `my-agent/` | A local FastAPI assistant application with web pages, deterministic command parsing, runtime skills, and browser automation adapters for sites such as Bilibili, Taobao, and Xianyu. | `my-agent/README.md` |
+| `XingClaw-standalone/` | 一个独立的 Python AI 编程助手框架，包含统一的大模型接口、Agent 循环、命令行工具和飞书 IM 对接。 | `XingClaw-standalone/START_HERE.md` |
+| `my-agent/` | 一个本地 FastAPI 助手应用，带网页界面、确定性的命令解析、运行时技能和浏览器自动化能力。 | `my-agent/README.md` |
+| `自动充电/` | 基于 UWB、TF 和 Nav2 的单点导航节点，负责把 UWB 目标点平滑后转成导航目标。 | `自动充电/README.md` |
+| `灭火狗/` | 基于 ROS1 的火情识别与点位发布项目，支持 MQTT 模板匹配、深度估计和 `/clicked_point` 发布。 | `灭火狗/README.md` |
+| `雷达-摄像头对齐/` | 雷达点云与相机图像的离线对齐工具，支持外参手动调节、投影验证和区域深度查询。 | `雷达-摄像头对齐/README.md` |
+| `水电站智能视觉告警复核系统/` | 面向水电站场景的智能视觉告警系统，包含视频抽帧、目标检测、事件复核、告警抑制和推送。 | `水电站智能视觉告警复核系统/README.md` |
 
-## Which One Should I Open?
+## 从哪里开始
 
-Start with `XingClaw-standalone/` if you want to study or run the reusable agent framework.
+- 如果你想看可复用的 AI 助手框架，先打开 `XingClaw-standalone/`。
+- 如果你想看个人网页助手和浏览器自动化，先打开 `my-agent/`。
+- 如果你关心机器人导航，先看 `自动充电/`。
+- 如果你关心火情识别链路，先看 `灭火狗/`。
+- 如果你关心雷达和相机标定，先看 `雷达-摄像头对齐/`。
+- 如果你关心水电站视觉告警，先看 `水电站智能视觉告警复核系统/`。
 
-Start with `my-agent/` if you want to run the personal web assistant and browser automation app.
+这几个目录彼此独立，运行时通常不共享同一个包管理器或运行环境，建议在各自目录下单独安装和启动。
 
-The two directories do not share one package manager or one runtime. Install and run each project from its own directory.
+## 仓库约定
 
-## Repository Hygiene
-
-Local virtual environments, browser profiles, logs, generated sessions, editor settings, and secret files are intentionally ignored. Do not commit real API keys, browser state, runtime logs, or generated `.xingclaw` session data.
+- 本仓库中会保留局部虚拟环境、浏览器配置、运行日志、生成的会话数据和编辑器状态文件。
+- 不要提交真实 API Key、浏览器状态、运行日志或临时生成的数据文件。
