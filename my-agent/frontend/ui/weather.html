@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🌤️ 天气 - syf_agent</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 650px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border-radius: 24px;
+            padding: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4);
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 25px;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .back-btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.7);
+            padding: 8px 16px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .back-btn:hover { background: rgba(255, 255, 255, 0.15); color: #fff; }
+
+        .header h1 {
+            color: #fff;
+            font-size: 24px;
+            font-weight: 600;
+        }
+        .header h1 span {
+            background: linear-gradient(135deg, #f093fb, #f5576c);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .search-area {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .search-area input {
+            flex: 1;
+            padding: 14px 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.06);
+            color: white;
+            font-size: 16px;
+            outline: none;
+            transition: all 0.3s;
+        }
+        .search-area input::placeholder { color: rgba(255, 255, 255, 0.3); }
+        .search-area input:focus {
+            border-color: rgba(240, 147, 251, 0.5);
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .search-area button {
+            padding: 14px 28px;
+            background: linear-gradient(135deg, #f093fb, #f5576c);
+            border: none;
+            border-radius: 14px;
+            color: white;
+            font-size: 15px;
+            cursor: pointer;
+            transition: all 0.3s;
+            white-space: nowrap;
+            font-weight: 500;
+        }
+        .search-area button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(240, 147, 251, 0.4);
+        }
+        .search-area button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+        .quick-city {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 20px;
+        }
+
+        .city-btn {
+            padding: 6px 14px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            color: rgba(255, 255, 255, 0.7);
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .city-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+        }
+
+        .weather-card {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 20px;
+            padding: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            min-height: 200px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .weather-card .city-name {
+            font-size: 28px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+
+        .weather-card .condition-icon {
+            font-size: 64px;
+            margin: 10px 0;
+        }
+
+        .weather-card .temperature {
+            font-size: 48px;
+            font-weight: 700;
+            color: #fff;
+            margin-bottom: 4px;
+        }
+
+        .weather-card .condition-text {
+            font-size: 18px;
+            color: rgba(255, 255, 255, 0.7);
+            margin-bottom: 20px;
+        }
+
+        .weather-details {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            width: 100%;
+            max-width: 400px;
+        }
+
+        .weather-detail {
+            text-align: center;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+        }
+
+        .weather-detail .label {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.4);
+            margin-bottom: 4px;
+        }
+
+        .weather-detail .value {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        .placeholder {
+            color: rgba(255, 255, 255, 0.3);
+            font-size: 16px;
+            text-align: center;
+        }
+
+        .placeholder .big-icon {
+            font-size: 72px;
+            margin-bottom: 16px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: rgba(255, 255, 255, 0.4);
+        }
+        .loading .spinner {
+            width: 36px; height: 36px;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top-color: #f093fb;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 16px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .error-msg {
+            color: #ef4444;
+            text-align: center;
+            padding: 20px;
+            font-size: 15px;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 20px;
+            color: rgba(255, 255, 255, 0.2);
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-left">
+                <a class="back-btn" href="/">← 返回主页</a>
+                <h1>🌤️ <span>天气</span></h1>
+            </div>
+        </div>
+
+        <!-- 搜索区域 -->
+        <div class="search-area">
+            <input type="text" id="cityInput" placeholder="输入城市名称（如：北京、London、New York）"
+                   onkeydown="if(event.key === 'Enter') searchWeather()">
+            <button id="searchBtn" onclick="searchWeather()">查询 🔍</button>
+        </div>
+
+        <!-- 快捷城市 -->
+        <div class="quick-city">
+            <button class="city-btn" onclick="quickCity('北京')">北京</button>
+            <button class="city-btn" onclick="quickCity('上海')">上海</button>
+            <button class="city-btn" onclick="quickCity('深圳')">深圳</button>
+            <button class="city-btn" onclick="quickCity('成都')">成都</button>
+            <button class="city-btn" onclick="quickCity('New+York')">纽约</button>
+            <button class="city-btn" onclick="quickCity('London')">伦敦</button>
+            <button class="city-btn" onclick="quickCity('Tokyo')">东京</button>
+            <button class="city-btn" onclick="quickCity('Paris')">巴黎</button>
+        </div>
+
+        <!-- 天气展示 -->
+        <div class="weather-card" id="weatherCard">
+            <div class="placeholder" id="placeholderView">
+                <div class="big-icon">🔍</div>
+                <div>输入城市名称查询天气</div>
+                <div style="margin-top:8px;font-size:13px;color:rgba(255,255,255,0.2);">
+                    支持中文和英文城市名
+                </div>
+            </div>
+
+            <div id="loadingView" class="loading" style="display:none;">
+                <div class="spinner"></div>
+                <div>正在查询天气...</div>
+            </div>
+
+            <div id="resultView" style="display:none;">
+                <div class="city-name" id="cityName">-</div>
+                <div class="condition-icon" id="conditionIcon">☀️</div>
+                <div class="temperature" id="temperature">-</div>
+                <div class="condition-text" id="conditionText">-</div>
+                <div class="weather-details">
+                    <div class="weather-detail">
+                        <div class="label">💧 湿度</div>
+                        <div class="value" id="humidity">-</div>
+                    </div>
+                    <div class="weather-detail">
+                        <div class="label">🌬️ 风速</div>
+                        <div class="value" id="wind">-</div>
+                    </div>
+                    <div class="weather-detail">
+                        <div class="label">🌧️ 降水</div>
+                        <div class="value" id="precipitation">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="errorView" class="error-msg" style="display:none;">-</div>
+        </div>
+
+        <div class="footer">syf_agent v1.0.0</div>
+    </div>
+
+    <script>
+        // 天气状况对应的 emoji
+        function getWeatherEmoji(condition) {
+            const c = condition.toLowerCase();
+            if (c.includes('clear') || c.includes('晴') || c.includes('sunny')) return '☀️';
+            if (c.includes('cloud') || c.includes('多云') || c.includes('阴')) return '☁️';
+            if (c.includes('rain') || c.includes('雨') || c.includes('drizzle')) return '🌧️';
+            if (c.includes('snow') || c.includes('雪') || c.includes('sleet')) return '❄️';
+            if (c.includes('thunder') || c.includes('雷') || c.includes('storm')) return '⛈️';
+            if (c.includes('fog') || c.includes('雾') || c.includes('mist')) return '🌫️';
+            if (c.includes('wind') || c.includes('风')) return '💨';
+            if (c.includes('overcast')) return '☁️';
+            if (c.includes('partly')) return '⛅';
+            return '🌤️';
+        }
+
+        async function searchWeather() {
+            const input = document.getElementById('cityInput');
+            const city = input.value.trim();
+            if (!city) return;
+            await doSearch(city);
+        }
+
+        function quickCity(city) {
+            document.getElementById('cityInput').value = city;
+            doSearch(city);
+        }
+
+        async function doSearch(city) {
+            const placeholderView = document.getElementById('placeholderView');
+            const loadingView = document.getElementById('loadingView');
+            const resultView = document.getElementById('resultView');
+            const errorView = document.getElementById('errorView');
+            const searchBtn = document.getElementById('searchBtn');
+
+            placeholderView.style.display = 'none';
+            resultView.style.display = 'none';
+            errorView.style.display = 'none';
+            loadingView.style.display = 'block';
+            searchBtn.disabled = true;
+
+            try {
+                const res = await fetch(`/api/weather?city=${encodeURIComponent(city)}`);
+                const data = await res.json();
+
+                loadingView.style.display = 'none';
+
+                if (data.error) {
+                    errorView.textContent = `查询失败：${data.error}`;
+                    errorView.style.display = 'block';
+                    return;
+                }
+
+                document.getElementById('cityName').textContent = city;
+                document.getElementById('conditionIcon').textContent = getWeatherEmoji(data.condition || '');
+                document.getElementById('temperature').textContent = data.temperature || '-';
+                document.getElementById('conditionText').textContent = data.condition || '-';
+                document.getElementById('humidity').textContent = data.humidity || '-';
+                document.getElementById('wind').textContent = data.wind || '-';
+                document.getElementById('precipitation').textContent = data.precipitation || '-';
+
+                resultView.style.display = 'block';
+
+            } catch (e) {
+                loadingView.style.display = 'none';
+                errorView.textContent = `连接后端失败：${e.message}`;
+                errorView.style.display = 'block';
+            }
+
+            searchBtn.disabled = false;
+        }
+    </script>
+</body>
+</html>

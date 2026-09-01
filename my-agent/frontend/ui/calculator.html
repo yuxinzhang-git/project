@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🧮 计算器 - syf_agent</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 800px;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border-radius: 24px;
+            padding: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.4);
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 25px;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .back-btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.7);
+            padding: 8px 16px;
+            border-radius: 12px;
+            cursor: pointer;
+            font-size: 14px;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+
+        .back-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+        }
+
+        .header h1 {
+            color: #fff;
+            font-size: 24px;
+            font-weight: 600;
+        }
+
+        .header h1 span {
+            background: linear-gradient(45deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badge {
+            display: inline-block;
+            background: rgba(82, 183, 136, 0.2);
+            color: #52b788;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+        }
+
+        .status-badge.disconnected {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .quick-calc {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+
+        .quick-btn {
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            color: rgba(255, 255, 255, 0.8);
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .quick-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            transform: translateY(-1px);
+        }
+
+        .chat-area {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 16px;
+            padding: 20px;
+            height: 400px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .chat-area::-webkit-scrollbar { width: 6px; }
+        .chat-area::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 3px; }
+
+        .message {
+            margin-bottom: 16px;
+            display: flex;
+            flex-direction: column;
+        }
+        .message.user { align-items: flex-end; }
+        .message.assistant { align-items: flex-start; }
+
+        .message .bubble {
+            max-width: 80%;
+            padding: 12px 18px;
+            border-radius: 18px;
+            font-size: 15px;
+            line-height: 1.6;
+        }
+        .message.user .bubble {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+        .message.assistant .bubble {
+            background: rgba(255, 255, 255, 0.1);
+            color: #e0e0e0;
+            border-bottom-left-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .message .label {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.4);
+            margin-bottom: 4px;
+            padding: 0 4px;
+        }
+        .tool-call {
+            font-size: 12px;
+            color: #f093fb;
+            background: rgba(240, 147, 251, 0.1);
+            padding: 4px 10px;
+            border-radius: 8px;
+            margin-top: 4px;
+            display: inline-block;
+        }
+
+        .input-area {
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-area input {
+            flex: 1;
+            padding: 14px 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.06);
+            color: white;
+            font-size: 15px;
+            outline: none;
+            transition: all 0.3s;
+        }
+        .input-area input::placeholder { color: rgba(255, 255, 255, 0.3); }
+        .input-area input:focus {
+            border-color: rgba(102, 126, 234, 0.5);
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .input-area button {
+            padding: 14px 28px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border: none;
+            border-radius: 14px;
+            color: white;
+            font-size: 15px;
+            cursor: pointer;
+            transition: all 0.3s;
+            white-space: nowrap;
+            font-weight: 500;
+        }
+        .input-area button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
+        }
+        .input-area button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+        .thinking {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 18px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 18px;
+            border-bottom-left-radius: 4px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 14px;
+        }
+        .thinking .dot {
+            width: 8px; height: 8px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            animation: bounce 1.4s ease-in-out infinite;
+        }
+        .thinking .dot:nth-child(2) { animation-delay: 0.2s; }
+        .thinking .dot:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes bounce {
+            0%, 80%, 100% { transform: translateY(0); }
+            40% { transform: translateY(-8px); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-left">
+                <a class="back-btn" href="/">← 返回主页</a>
+                <h1>🧮 <span>计算器 Agent</span></h1>
+            </div>
+            <div class="status-badge" id="statusBadge">● 已连接</div>
+        </div>
+
+        <div class="quick-calc">
+            <button class="quick-btn" onclick="sendQuick('帮我计算 365 * 24 * 60')">🕐 一年多少分钟？</button>
+            <button class="quick-btn" onclick="sendQuick('计算 2 的 10 次方')">🔢 2¹⁰ = ?</button>
+            <button class="quick-btn" onclick="sendQuick('贷款 50 万，年利率 3.8%，期限 20 年，月供多少？')">🏠 房贷计算</button>
+            <button class="quick-btn" onclick="sendQuick('计算 (99 + 87 + 92 + 78 + 85) / 5 的平均分')">📊 平均分</button>
+        </div>
+
+        <div class="chat-area" id="chatArea">
+            <div class="message assistant">
+                <div class="label">🤖 计算器 Agent</div>
+                <div class="bubble">
+                    你好！我是你的 AI 计算助手 👋<br>
+                    你可以直接问我任何数学问题，比如：<br>
+                    • <em>"123 * 456 等于多少？"</em><br>
+                    • <em>"贷款 100 万，30 年，月供多少？"</em><br>
+                    • <em>"计算 (25 + 37) * 12 / 4"</em>
+                </div>
+            </div>
+        </div>
+
+        <div class="input-area">
+            <input type="text" id="userInput" placeholder="输入你的计算问题..."
+                   onkeydown="if(event.key === 'Enter') sendMessage()">
+            <button id="sendBtn" onclick="sendMessage()">发送 🚀</button>
+        </div>
+    </div>
+
+    <script>
+        let conversationHistory = [];
+
+        async function checkConnection() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                document.getElementById('statusBadge').textContent = '● 已连接';
+                document.getElementById('statusBadge').className = 'status-badge';
+            } catch (e) {
+                document.getElementById('statusBadge').textContent = '● 未连接';
+                document.getElementById('statusBadge').className = 'status-badge disconnected';
+            }
+        }
+
+        function addMessage(role, content, toolCalls = null) {
+            const chatArea = document.getElementById('chatArea');
+            const div = document.createElement('div');
+            div.className = `message ${role}`;
+            const label = document.createElement('div');
+            label.className = 'label';
+            label.textContent = role === 'user' ? '👤 你' : '🤖 计算器 Agent';
+            div.appendChild(label);
+            const bubble = document.createElement('div');
+            bubble.className = 'bubble';
+            bubble.innerHTML = String(content == null ? '' : content).replace(/\n/g, '<br>');
+            div.appendChild(bubble);
+            if (toolCalls && toolCalls.length > 0) {
+                toolCalls.forEach(tc => {
+                    const toolDiv = document.createElement('div');
+                    toolDiv.className = 'tool-call';
+                    toolDiv.textContent = `⚙️ 调用 ${tc.tool}: ${tc.output}`;
+                    div.appendChild(toolDiv);
+                });
+            }
+            chatArea.appendChild(div);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function showThinking() {
+            const chatArea = document.getElementById('chatArea');
+            const div = document.createElement('div');
+            div.className = 'message assistant';
+            div.id = 'thinkingIndicator';
+            const label = document.createElement('div');
+            label.className = 'label';
+            label.textContent = '🤖 计算器 Agent';
+            div.appendChild(label);
+            const thinking = document.createElement('div');
+            thinking.className = 'thinking';
+            thinking.innerHTML = '思考中';
+            const dots = document.createElement('span');
+            dots.innerHTML = '<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
+            thinking.appendChild(dots);
+            div.appendChild(thinking);
+            chatArea.appendChild(div);
+            chatArea.scrollTop = chatArea.scrollHeight;
+        }
+
+        function hideThinking() {
+            const indicator = document.getElementById('thinkingIndicator');
+            if (indicator) indicator.remove();
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('userInput');
+            const message = input.value.trim();
+            if (!message) return;
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.disabled = true;
+            addMessage('user', message);
+            input.value = '';
+            showThinking();
+            try {
+                const res = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message, conversation_history: conversationHistory })
+                });
+                const data = await res.json();
+                hideThinking();
+                if (!res.ok) throw new Error(data.detail || 'Chat request failed');
+                addMessage('assistant', data.reply || 'No reply received', data.tool_calls);
+                conversationHistory.push({ role: 'user', content: message });
+                conversationHistory.push({ role: 'assistant', content: data.reply });
+            } catch (e) {
+                hideThinking();
+                addMessage('assistant', `❌ 连接失败：${e.message}`);
+            }
+            sendBtn.disabled = false;
+        }
+
+        function sendQuick(text) {
+            document.getElementById('userInput').value = text;
+            sendMessage();
+        }
+
+        checkConnection();
+    </script>
+</body>
+</html>

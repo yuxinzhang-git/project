@@ -1,0 +1,21 @@
+{
+  "tasks": [
+    {
+      "id": "3fbc9d05ce40441ea51049f93e99c27b",
+      "title": "二手全画幅微单出售自助包（19.9元首轮测试）",
+      "task_type": "one_off_delivery",
+      "customer_need": "待验证：面向准备自行出售全画幅微单的个人卖家。",
+      "deliverable": "固定数字资料包（8份产品资料＋本地验收记录），一次性人工交付。",
+      "amount": 19.9,
+      "costs": 0.0,
+      "status": "ready",
+      "payment_status": "unpaid",
+      "artifact_path": "data/money/artifacts/a7m3-seller-kit-v1",
+      "notes": "本地产品准备已完成：等待账号持有人完成人工规则核验。尚未发布、未创建订单、未付款；19.9元仅为测试标价，不计入收入。",
+      "created_at": "2026-07-29T00:37:15",
+      "updated_at": "2026-07-29T00:41:20",
+      "delivered_at": null,
+      "settled_at": null
+    }
+  ]
+}

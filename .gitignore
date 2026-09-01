@@ -1,0 +1,77 @@
+# Python caches and build output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+agent/
+**/.venv/
+**/venv/
+**/env/
+**/ENV/
+**/agent/
+
+# Node dependencies and local tools
+node_modules/
+**/node_modules/
+.tools/
+**/.tools/
+
+# Local agent/editor/runtime state
+.codex/
+**/.codex/
+.agents/
+**/.agents/
+.xingclaw/
+**/.xingclaw/
+
+# Browser profiles and generated data
+data/browser/profile/
+data/browser/screenshots/
+**/data/browser/profile/
+**/data/browser/screenshots/
+**/data/money/state.json
+**/data/money/artifacts/
+**/data/**/*.log
+**/data/**/*.err
+
+# Logs
+*.log
+*.err
+runtime-start.stdout.log
+runtime-start.stderr.log
+
+# Secrets and local environment files
+.env
+.env.*
+!.env.example
+!.env.ps1.example
+*.pem
+*.key
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*.tmp
+
+# Local Windows shortcuts
+*.lnk
