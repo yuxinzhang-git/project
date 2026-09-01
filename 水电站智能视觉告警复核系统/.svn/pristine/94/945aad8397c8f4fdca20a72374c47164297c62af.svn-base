@@ -1,0 +1,318 @@
+import asyncio
+import os
+import uuid
+import aio
+import cv2
+import requests
+import logging
+from aio import Session, file2base64
+from frame import Frame
+from result import Result, Object
+from reward import Reward
+from label import get_cls_token, get_probs
+import re
+
+# 配置日志系统
+logger = logging.getLogger(__name__)
+
+# version = '2.2'
+# port = 3014
+# prefix = '/xzsta/llm'
+
+version = '2.2'
+port = 18001
+prefix = ''
+
+def fire_detect(img64):
+    resp = requests.post('http://192.168.1.65:7002/detect-info', json={"conf": 0.3, 'image':img64})
+    # print(resp.text)
+    return [e for e in resp.json()['results'] if e['class_name'] == 'Fire' or e['class_name'] == 'Smoke']
+
+# 缺省处理
+async def default_handler(*args, **kwargs):
+    pass
+
+# 烟火事件处理
+async def fire_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return
+
+    # 查找外切矩形
+    x1,y1,x2,y2 = 1.0,1.0,0.,0.
+    for obj in result.GetObjects('fire'):
+        xmin,ymin,xmax,ymax = obj.rectangle()
+        x1,y1,x2,y2 = min(xmin,x1),min(ymin,y1),max(xmax,x2),max(ymax,y2)
+
+    # 以外切矩形的中心为中心，宽高至少因为原图宽高的1/2
+    w,h = x2-x1,y2-y1
+    center = x1+w/2,y1+h/2
+    w,h = max(w,0.5),max(h,0.5)
+    # w = 1. if w>1. else w
+    # h = 1. if h>1. else h
+
+    found = {'烟火':False}
+    # img = frame.crop(center=center,dim=[w,h])
+    # gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # fm = cv2.Laplacian(gray, cv2.CV_64F).var()
+    # if fm < 500. :
+    #     logger.info(f"烟火检测: {name} - {fm},画面模糊无法判断。")
+    #     return found
+    
+    # cv2.imwrite(f'debug/{uuid.uuid4()}.jpg', frame.crop(center=center,dim=[w,h]))
+    sess = Session(version=version, port=port, prefix=prefix)
+    v = await sess.Text('请描述这幅交通监控图片中的路面和车辆情况', frame.crop64(center=center,dim=[w,h]))
+    # v = await sess.Text('请描述一下这幅图片中的路面和车辆的情况', frame.crop64(center=center,dim=[w,h]))
+    logger.info(f"烟火检测: {name}:\n{v}")
+    if '浓烟' in v or '黑烟' in v or '火焰' in v or '火光' in v or '火堆' in v or '燃烧' in v or '火苗' in v or '烟雾' in v:
+        found['烟火'] = True
+        # cv2.imwrite(f'debug/烟火{uuid.uuid4()}.jpg', frame.crop(center=center,dim=[w,h]))
+
+    # if '箱子' in v or '纸箱' in v or '盒子' in v or '垃圾' in v:
+    #     found['抛洒物'] = True
+    #     cv2.imwrite(f'debug/抛撒物{uuid.uuid4()}.jpg', frame.crop(center=center,dim=[w,h]))
+
+    # img = frame.crop(center=center, dim=[w,h])
+    # fname = uuid.uuid4()
+    # cv2.imwrite(f'debug/{fname}.jpg', img)
+
+    # with open('desc.txt', 'a') as f:
+    #     f.write(f'{name} - {fname}: {v}\n')
+    #     f.flush()
+    
+    return found
+
+# 行人事件处理
+async def person_handler(*args, **kwargs):
+    # output_dir = './output_person'
+    # if not os.path.exists(output_dir):
+    #     os.makedirs(output_dir)
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return {'行人':False, '施工人员':False}
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return {'行人':False, '施工人员':False}
+
+    found = {'行人':False, '施工人员':False}
+    for person in result.GetObjects('person'):
+        # print(f"Object details - Label: {person.label()}, Center: {person.center()}, Rectangle: {person.rectangle()}")
+        # print("person",person)
+        sess = Session(version=version, port=port, prefix=prefix)
+        # bbox = person.rectangle()
+        # center = [bbox[0]+(bbox[2]-bbox[0])/2,bbox[1]+(bbox[3]-bbox[1])/2]
+        # img64 = frame.crop64(person.rectangle(),extend=0.1,resize=(512,512))
+
+        # img = frame.crop(person.rectangle(),extend=0.1)
+        # cv2.imwrite(f'output_person2/{uuid.uuid4()}.jpg', img)
+        # global k
+        # k += 1
+        # img = frame.crop(person.rectangle(),extend=0.1)
+        # imgname = '%04d.jpg' % k
+        # cv2.imwrite(f'output/{imgname}', img)
+        # print('write jpg img')
+        # while True:
+        #     pass
+
+        img64 = frame.crop64(person.rectangle(),extend=0.2,resize=(512,512))
+        v = await sess.Text('描述一下图片中人物的上半身穿着', img64)
+        logger.info(f"行人检测: {v}")
+        if (('橙' in v or '黄' in v or '红' in v or '粉' in v or '绿' in v) and ('反光' in v or '背心' in v or '马甲' in v)) or ('消防服' in v) or ('制服' in v) or ('警服' in v) or ('头盔' in v) or ('安全帽' in v):
+            found['施工人员'] = True
+            # img = frame.crop(person.rectangle(),extend=0.1)
+            # cv2.imwrite(f'output_person2/施工人员{v}{uuid.uuid4()}.jpg', img)
+        else:
+            found['行人'] = True
+            # img = frame.crop(person.rectangle(),extend=0.1)
+            # cv2.imwrite(f'output_person2/行人{v}{uuid.uuid4()}.jpg', img)
+        
+      
+
+        if found['行人'] and found['施工人员']:
+            return found
+
+    return found
+
+# 抛洒物事件处理
+async def debris_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return
+
+    # 查找外切矩形
+    debris_objects = result.GetObjects('debris')
+    if not debris_objects:
+        return
+    
+    # 收集所有识别框，计算最大边界
+    all_xmin, all_ymin = float('inf'), float('inf')
+    all_xmax, all_ymax = float('-inf'), float('-inf')
+    
+    for obj in debris_objects:
+        xmin, ymin, xmax, ymax = obj.rectangle()
+        all_xmin = min(all_xmin, xmin)
+        all_ymin = min(all_ymin, ymin)
+        all_xmax = max(all_xmax, xmax)
+        all_ymax = max(all_ymax, ymax)
+    
+    # 计算所有框的外接矩形的中心和尺寸
+    center = [all_xmin + (all_xmax - all_xmin) / 2, all_ymin + (all_ymax - all_ymin) / 2]
+    w, h = all_xmax - all_xmin, all_ymax - all_ymin
+    area = w * h
+    print(f"合并后的区域面积: {area}")
+    
+    # 按比例扩展，使目标在裁剪图像中占合适比例（约25%）
+    target_ratio = 0.25
+    expand_factor = 1.0 / target_ratio  # 扩展因子为4.0
+    
+    # 计算扩展后的宽高
+    w_expanded = w * expand_factor
+    h_expanded = h * expand_factor
+    
+    # 保持宽高比，取较大值确保目标完整显示
+    max_dim = max(w_expanded, h_expanded)
+    w, h = max_dim, max_dim
+    
+    # 设置最小裁剪尺寸，避免裁剪区域过小
+    w, h = max(w, 0.15), max(h, 0.15)
+    # 设置最大裁剪尺寸，避免超出图像范围
+    w, h = min(w, 1.0), min(h, 1.0)
+    
+    # 只调用一次大模型
+    found = {
+        '抛洒物': False,
+    }
+    
+    sess = Session(version=version, port=port, prefix=prefix)
+    v = await sess.Text('照片中有什么', frame.crop64(center=center, dim=[w, h]))
+    
+    # cv2.imwrite(f'debug/{v}{uuid.uuid4()}.jpg', frame.crop(center=center, dim=[w, h]))
+    logger.info(f"抛洒物检测: {name}:\n{v}")
+    
+    if '箱子' in v or '纸箱' in v or '盒子' in v or '垃圾' in v:
+        found['抛洒物'] = True
+        # cv2.imwrite(f'debug/抛撒物{uuid.uuid4()}.jpg', frame.crop(center=center, dim=[w, h]))
+    
+    return found
+
+# 摩托车事件处理
+async def motor_handler(*args, **kwargs):
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return {'摩托车':False}
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return {'摩托车':False}
+
+    found = {'摩托车':False}
+    for motor in result.GetObjects('motorcycle'):
+        # print(f"Object details - Label: {motor.label()}, Center: {motor.center()}, Rectangle: {motor.rectangle()}")
+        sess = Session(version=version, port=port, prefix=prefix)
+        img64 = frame.crop64(motor.rectangle(), extend=0.2, resize=(512,512))
+        v = await sess.Text('描述一下图片中的车辆类型', img64)
+        logger.info(f"摩托车检测: {v}")
+        if '摩托车' in v or '电动车' in v or '两轮车' in v or '三轮车' in v:
+            found['摩托车'] = True
+            return found
+
+    return found
+
+# 摩托车多标签处理
+async def motor_label_handler(*args, **kwargs):
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return {'摩托车':False}
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return {'摩托车':False}
+
+    # 获取env来获取配置的URL
+    env = kwargs.get('env')
+    token_url = env.get_token_url() if env else None
+    label_url = env.get_label_url() if env else None
+
+    found = {'摩托车':False}
+    for motor in result.GetObjects('motorcycle'):
+        img64 = frame.crop64(motor.rectangle(),extend=0.2)
+        # img = frame.crop(motor.rectangle(),extend=0.2)
+        # cv2.imwrite(f'debug/{uuid.uuid4()}.jpg', img)
+        cls_token = get_cls_token(img64=img64, token_url=token_url)
+        probs = get_probs(cls_token, label_url=label_url)
+        if len(probs) > 4 and probs[4] > 0.95:
+            found['摩托车'] = True
+            return found
+
+    return found
+
+# 多标签模型过滤
+async def person_label_handler(*args, **kwargs):
+    name = kwargs.get('name')
+    result = kwargs.get('result')
+    if result is None:
+        logger.warning('result is None')
+        return {'行人':False, '施工人员':False}
+    frame = kwargs.get('frame')
+    if frame is None:
+        logger.warning('frame is None')
+        return {'行人':False, '施工人员':False}
+
+    # 获取env来获取配置的URL
+    env = kwargs.get('env')
+    token_url = env.get_token_url() if env else None
+    label_url = env.get_label_url() if env else None
+
+    found = {'行人':False, '施工人员':False}
+    for person in result.GetObjects('person'):
+        img64 = frame.crop64(person.rectangle(),extend=0.2)
+        cls_token = get_cls_token(img64=img64, token_url=token_url)
+        probs = get_probs(cls_token, label_url=label_url)
+        # print(name, probs)
+        if probs[0] > 0.95 and probs[0] > probs[1]:
+            found['行人'] = True
+        if probs[1] > 0.95 and probs[1] > probs[0]:
+            found['施工人员'] = True
+        if found['行人'] and found['施工人员']:
+            return found
+
+    return found
+
+async def test_person():
+    frame = None
+    with open('person.jpg', 'rb') as f:
+        frame = Frame(data=f.read())
+    result = Result()
+    w,h = 1622,911
+    x1,y1,x2,y2 = 441,416,616,721
+    result.AddObject(Object(label='person', xmin=x1/w,ymin=y1/h,xmax=x2/w,ymax=y2/h))
+    await person_handler(frame=frame, result=result)
+
+async def test_fire():
+    frame = None
+    with open('fire.png', 'rb') as f:
+        frame = Frame(data=f.read())
+    result = Result()
+    w,h = 1917,899
+    x1,y1 = 611,440
+    result.AddObject(Object(label='停车', center=(x1/w,y1/h)))
+    await fire_handler(frame=frame, result=result)
+
+if __name__ == '__main__':
+    asyncio.run(test_fire())

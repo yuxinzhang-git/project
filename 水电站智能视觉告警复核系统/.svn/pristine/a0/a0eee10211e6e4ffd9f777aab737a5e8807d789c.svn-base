@@ -1,0 +1,20 @@
+services:
+    alarm:
+        image: xiezuo/cuda:12.2.2-cudnn8-devel-ubuntu22.04
+        container_name: alarm_fastapi
+        shm_size: "128gb"
+        network_mode: host
+        restart: "always"
+        command: bash -c "python3 /stream/alarm_fastapi.py"
+        #command: bash -c "sleep infinity"
+        volumes:
+          - /home/xiezuo/beta/ffmpeg/:/beta/ffmpeg/
+#          - /appdata/stream/workspace/{{.BatchID}}/:/appdata/stream/workspace/
+#          - {{.Config}}:{{.Config}}
+          - /home/xiezuo/beta/aiod/python:/stream/
+#          - /usr/lib/x86_64-linux-gnu/libnvcuvid.so.1:/usr/lib/x86_64-linux-gnu/libnvcuvid.so.1
+        environment:
+          LD_LIBRARY_PATH: /beta/ffmpeg/lib:/beta/ffmpeg/lib/aarch64-linux-gnu
+#          XZ_CONFIG: {{.Config}}
+#          WORKSPACE: /appdata/stream/workspace/{{.BatchID}}/
+#          MYNAME: {{.Service}}

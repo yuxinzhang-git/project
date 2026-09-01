@@ -1,0 +1,217 @@
+import asyncio
+import sys
+import logging
+from buffer import AsyncioRingBuffer
+from datetime import datetime
+from aio import file2base64
+from frame import Frame
+from asyncio.exceptions import LimitOverrunError
+
+# 配置日志系统
+logger = logging.getLogger(__name__)
+
+# JPEG 边界字节序列
+# FFmpeg 输出的 MJPEG 通常以 0xFF 0xD8 开始，以 0xFF 0xD9 结束
+JPEG_START_BOUNDARY = b'\xff\xd8'
+JPEG_END_BOUNDARY = b'\xff\xd9'
+
+class Ffmpeg:
+
+    def __init__(self):
+        self.url = 'rtsp://admin:Xiezuo01@192.168.1.56'
+        # self.command = 'ffmpeg'
+        self.command = '/beta/ffmpeg/bin/ffmpeg'
+        # self.args = [
+        #     "-re", "-rtsp_transport", "tcp", "-i", self.url, "-vf", "fps=1/2", "-an", "-f", "image2", "-"
+        # ]
+        self.args = [
+            "-hwaccel", "cuda", "-re", "-rtsp_transport", "tcp", "-i", self.url, "-vf", "fps=1/2", "-an", "-f", "image2", "-update", "1", "-"
+        ]
+        self.ring = AsyncioRingBuffer(capacity=5)
+        self._status = 1
+        self.frame_count = 0  # 帧序号计数器
+        self.should_restart = False  # 是否需要重启标志
+
+    async def error_handler(self, stream):
+
+        while True:
+            try:
+                line = await stream.readline()
+                if line:
+                    logger.debug(line.decode('utf-8', errors='ignore').strip())
+                else:
+                    # 流已关闭，退出循环
+                    self._status = 0
+                    break
+            except LimitOverrunError as e:
+                # 捕获并忽略 LimitOverrunError
+              
+                logger.warning(f"警告：忽略 LimitOverrunError: {e}") 
+                pass 
+            
+            except Exception as e:
+                # 捕获其他任何未预料的异常
+                logger.error(f"发生未预料的错误: {e}")
+                pass
+
+    async def output_handler(self, stream):
+        buffer = b''
+        while True:
+            chunk = await stream.read(4096)
+            if not chunk:
+                # 流已关闭，退出循环
+                self._status = 0
+                break
+
+            buffer += chunk
+            # 持续在缓冲区中查找 JPEG 边界
+            while True:
+                start_index = buffer.find(JPEG_START_BOUNDARY)
+                if start_index == -1:
+                    # 找不到开始边界，继续读取更多数据
+                    break
+                    
+                end_index = buffer.find(JPEG_END_BOUNDARY, start_index + 2)
+                if end_index == -1:
+                    # 找到了开始边界，但找不到结束边界，继续读取更多数据
+                    break
+                
+                # 找到了一个完整的 JPEG 图像
+                image_data = buffer[start_index : end_index + 2]
+                # 处理图像数据
+                # await handle_image(image_data)
+                # print(f'frame {self.frame_count}', file=sys.stderr)
+                await self.ring.push(Frame(image_data, self.frame_count))
+                self.frame_count += 1
+                # 从缓冲区中移除已处理的图像数据
+                buffer = buffer[end_index + 2:]
+
+    async def frame(self):
+        frame = await self.ring.peek()
+        return frame
+
+    async def get_all(self):
+        frames = await self.ring.get_all()
+        return frames
+    
+    async def monitor_frame_updates(self, process):
+        """
+        监控帧序号的变化，每5秒检查一次
+        如果连续3次检查没有变化，则终止进程并标记需要重启
+        """
+        last_frame_count = self.frame_count
+        no_change_count = 0
+        check_interval = 5  # 检查间隔（秒）
+        max_no_change = 3   # 最大无变化次数
+        
+        while True:
+            await asyncio.sleep(check_interval)
+            
+            current_frame_count = self.frame_count
+            if current_frame_count == last_frame_count:
+                no_change_count += 1
+                logger.warning(f'警告: 帧序号未变化 ({no_change_count}/{max_no_change})，当前帧号: {current_frame_count}')
+                
+                if no_change_count >= max_no_change:
+                    logger.error(f'错误: 连续{max_no_change}次检查帧序号未变化，终止进程并重启')
+                    self.should_restart = True
+                    try:
+                        process.terminate()
+                        await asyncio.sleep(1)
+                        if process.returncode is None:
+                            process.kill()
+                    except Exception as e:
+                        logger.error(f'终止进程时出错: {e}')
+                    break
+            else:
+                # 有新帧，重置计数器
+                no_change_count = 0
+                last_frame_count = current_frame_count
+    
+    async def run(self, url=None):
+        while True:  # 添加循环以支持重启
+            # 重置状态
+            self.should_restart = False
+            self.frame_count = 0
+            self._status = 1
+            
+            if url is not None:
+                self.url = url
+                if 'rtsp' not in self.url:
+                    # self.args = [
+                    #     "-re", "-i", self.url, "-vsync", "cfr", "-vf", "fps=1/2", "-an", "-f", "image2", "-update", "1", "-"
+                    # ]
+                    self.args = [
+                        "-hwaccel", "cuda", "-re", "-i", self.url, "-vsync", "cfr", "-vf", "fps=1/2", "-an", "-f", "image2", "-update", "1", "-"
+                    ]
+                else :
+                    self.args = [
+                        "-hwaccel", "cuda", "-re", "-rtsp_transport", "tcp","-i", self.url, "-vf", "fps=1/2", "-an", "-f", "image2", "-update", "1", "-"
+                    ]
+            
+            command = self.args.copy()
+            command.insert(0, self.command)
+            logger.info(f'command {command}')
+
+            # 记录启动时间
+            start_time = asyncio.get_event_loop().time()
+            
+            # 1. 创建子进程，并设置 stdout 和 stderr 为 asyncio.subprocess.PIPE
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE, 
+                stderr=asyncio.subprocess.PIPE
+            )
+        
+            # 2. 异步读取 stdout 和 stderr，并启动监控任务
+            stdout_task = asyncio.create_task(self.output_handler(process.stdout))
+            stderr_task = asyncio.create_task(self.error_handler(process.stderr))
+            monitor_task = asyncio.create_task(self.monitor_frame_updates(process))
+        
+            # 3. 等待子进程完成
+            await process.wait()
+            
+            # 计算运行时间
+            run_duration = asyncio.get_event_loop().time() - start_time
+            
+            # 4. 取消监控任务
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+            
+            # 5. 判断是否需要重启
+            # 如果进程退出码非0（错误退出），或者运行时间太短（少于30秒），或者监控任务标记需要重启
+            returncode = process.returncode
+            need_restart = False
+            restart_reason = ""
+            
+            if self.should_restart:
+                need_restart = True
+                restart_reason = "监控检测到无新帧"
+            elif returncode != 0:
+                need_restart = True
+                restart_reason = f"进程异常退出(退出码: {returncode})"
+            elif run_duration < 30:
+                need_restart = True
+                restart_reason = f"进程运行时间过短({run_duration:.1f}秒)"
+            
+            if need_restart:
+                logger.warning(f'正在重启 ffmpeg 进程... 原因: {restart_reason}')
+                await asyncio.sleep(2)  # 等待2秒后重启
+                continue
+            else:
+                # 正常退出，不需要重启
+                logger.info('ffmpeg 进程正常退出')
+                break
+
+    def status(self):
+        return self._status
+
+async def test1():
+    ffmpeg = Ffmpeg()
+    await ffmpeg.run()
+
+if __name__ == '__main__':
+    asyncio.run(test1())

@@ -1,0 +1,412 @@
+from abc import abstractmethod, ABCMeta
+import aiohttp
+import asyncio
+import random
+from typing import Dict, Any
+import sys, base64, datetime, time
+from aiohttp import ClientTimeout, ClientError
+import base64
+def encode_image(image_path):
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+# 假设的本地路径
+# BASE_PATH = "/home/dengjingye/data3/xzsta/python/"
+# base64_normal_car = encode_image(BASE_PATH + "车尾灯.jpg")  # 正常尾灯的图片
+# base64_fire_accident = encode_image(BASE_PATH + "小推车火.jpg") # 真实火灾的图片
+class Env:
+    def __init__(self):
+        self._task = None
+
+    def done(self):
+        if self._task is not None and self._task.done() is False:
+            return False
+        return True
+
+    def create_task(self, task):
+        self._task = asyncio.create_task(task)
+
+class Backend(metaclass=ABCMeta):
+    @abstractmethod
+    async def AsyncSend(self, msgs, msg, img64, temperature, max_tokens):
+        pass
+    @abstractmethod
+    def SetSessionId(self, sessionId):
+        pass
+
+class Session:
+    def __init__(self, system='', backend=None, version='', server='127.0.0.1', port=30001, prefix=''):
+        self._system = ''
+        if system != '':
+            self._system = system
+        if backend is not None:
+            self._backend = backend
+        else:
+            if version == '2.5':
+                self._backend = VL25(server, port)
+            elif version == '2.2':
+                self._backend = VL22(server, port, prefix)
+            else:
+                self._backend = None
+        self._msgs = []
+        now = datetime.datetime.now()
+        self._sessionId = int(now.timestamp()*1000)
+
+    async def Text(self, q, img64, temperature=None, max_tokens=None):
+        self._img64 = img64
+        self._backend.SetSessionId(self._sessionId)
+        result = await self._backend.AsyncSend(self._system, self._msgs, q, self._img64, temperature, max_tokens)
+        
+        if result["status"] == 200:
+            data = result['data']
+            if 'text' in data:
+                return data['text']
+            else:
+                print('error:', data, file=sys.stderr)
+        return None
+
+    def Rounds(self):
+        return len(self._rounds)
+    
+    def Msgs(self):
+        return self._rounds
+
+class VL22:
+    def __init__(self, ipaddr='127.0.0.1', port=18001, prefix='', temperature=0.7):
+        self._url = 'http://%s:%d%s/v1/chat/completions' % (ipaddr, port, prefix)
+        self._model = 'default'
+        self._stream = False
+        self._sessionId = 1
+        self._temperature = temperature
+
+    async def AsyncSend(self, system, msgs, msg, img64, temperature, max_tokens):
+        if temperature is None:
+            temperature = self._temperature
+        data = {
+            
+            "model": "Qwen/Qwen3.5-9B",
+            "messages": [
+                # {
+                #     "role": "system",
+                #     "content": '''你是一位专业的智能道路监控事故分析员。
+                #     你的首要任务是根据文本描述回答问题。               
+                #     你的回答必须简洁,直接''',
+                # },
+                # {"role": "user", "content": [
+                #     {"type": "image_url", "image_url": {"url":f"data:image/jpeg;base64,{base64_normal_car}" }},
+                #     {"type": "text", "text": "请判断图片中是否发生火灾。请排除车辆本身的刹车灯和反光。"}
+                # ]},
+                # {"role": "assistant", "content": "没有。图像中的橙色光源来自车尾的红色尾灯，而不是火灾或爆炸产生的火焰与烟雾。"},
+                
+                # # --- 3. Few-Shot 示例 2: 真实火灾 ---
+                # {"role": "user", "content": [
+                #     {"type": "image_url", "image_url": {"url":f"data:image/jpeg;base64,{base64_fire_accident}" }},
+                #     {"type": "text", "text": "请判断图片中是否发生火灾。请排除车辆本身的刹车灯和反光。"}
+                # ]},
+                # {"role": "assistant", "content": "是的。图片图片中心有一个着火的小推车或手推车。火焰呈明亮的橙黄色，在夜晚的背景中非常显眼。"},
+                {
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    # "text": "<|vision_start|><|image_pad|><|vision_end|>" + msg,
+                    "text":  msg,
+                },{
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{img64}",
+                    }
+                }]
+            }],
+            "temperature": 0.1,
+
+            # "top_k": 32,
+            # "top_p": 0.9,
+            # "min_p": 0.05,
+            # "top_n_logprobs": 0,
+            # "frequency_penalty": 0.1,
+            # "presence_penalty": 0.1,
+            # "n_choices": 1,
+            # "max_tokens": 256,
+
+            "seed": 42,                    # 固定随机种子
+            # "do_sample": False,            # 关键：关闭随机采样
+            # "num_beams": 1,                # 关键：贪婪解码
+            # "max_tokens": 256,
+            "repetition_penalty": 1.2,     # 可选：防止重复
+            "length_penalty": 1.0,         # 长度惩罚
+            "top_k": 20,
+            "chat_template_kwargs": {"enable_thinking": True},
+        }
+
+        retry = 0
+        while True:
+            start_time = time.perf_counter()
+            response = await async_http_post(self._url, json=data, headers={"Content-Type": "application/json"})
+            elapsed_time = time.perf_counter() - start_time
+            print(f"API调用耗时: {elapsed_time:.3f}秒 (状态码: {response['status']})", file=sys.stderr)
+            # if response['status'] != 200:
+            #     print(data)
+            #     print('error:', response, file=sys.stderr)
+            #     return None
+            if response["status"] == 200:
+                text = response['data']['choices'][0]['message']['content']
+                return {
+                    'status': 200,
+                    'data': {
+                        'text': text,
+                    }
+                }
+            else:
+                # print('error:', response, file=sys.stderr)
+                retry += 1
+                if retry > 5:
+                    print('error:', response, file=sys.stderr)
+                    break
+                else:
+                    sec = random.uniform(0.1, 2.0)
+                    await asyncio.sleep(sec)
+
+        return None
+
+    def SetSessionId(self, sessionId):
+        self._sessionId = sessionId
+        
+class VL25:
+    def __init__(self, ipaddr='127.0.0.1', port=58888, temperature=0.7):
+        self._url = 'http://%s:%d/v1/chat/interactive' % (ipaddr, port)
+        self._model = 'models/InternVL2-8B'
+        self._stream = False
+        self._sessionId = 1
+        self._temperature = temperature
+
+    async def AsyncSend(self, system, msgs, msg, img64, temperature, max_tokens):
+        if temperature is None:
+            temperature = self._temperature
+        data = {
+#             'model': self._model,
+            'prompt': msg,
+            'image_url': 'data:image/jpeg;base64,'+img64,
+            'session_id': self._sessionId,
+            'interactive_mode': False,
+#             'session_id': -1,
+#             'interactive_mode': False,
+            'stream': self._stream,
+            'stop': None,
+            'request_output_len': None,
+            'top_p': 0.95,
+            'top_k': 40,
+            'temperature': temperature,
+            'repetition_penalty': 1.1,
+            'ignore_eos': False,
+            'skip_special_tokens': True,
+            'cancel': False,
+            'adapter_name': None,
+            'seed': 0,
+            'min_new_tokens': None,
+            'min_p': 0
+        }
+
+        return await async_http_post(self._url, json=data, headers={"Content-Type": "application/json"})
+
+    def SetSessionId(self, sessionId):
+        self._sessionId = sessionId
+
+def file2base64(filepath=None, data=None):
+    if filepath is not None:
+        with open(filepath, 'rb') as file:
+            data = file.read()
+            return base64.b64encode(data).decode('utf-8')
+    if data is not None:
+        return base64.b64encode(data).decode('utf-8')
+    return None
+
+# -----------------
+# 异步get请求封装
+# -----------------
+async def async_http_get(url: str, params: Dict[str, Any] = None, timeout: int = 30) -> Dict[str, Any]:
+    """
+    封装的异步 HTTP GET 请求函数。
+    
+    参数:
+        url (str): 目标 URL。
+        params (Dict[str, Any], optional): URL 查询参数。默认为 None。
+        
+    返回:
+    """
+    try:
+
+        # 创建 ClientTimeout 对象，设置总超时时间
+        timeout = ClientTimeout(total=timeout)
+        
+        # 使用 aiohttp.ClientSession 启动一个客户端会话
+        # with 语句确保会话结束后资源被正确释放
+        async with aiohttp.ClientSession() as session:
+            # 发起异步 GET 请求
+            async with session.get(url, params=params, timeout=timeout) as response:
+                status = response.status
+                
+                # 检查响应状态码是否在 200-299 范围内
+                if 200 <= status < 300:
+                    # 如果响应是 JSON 格式，则异步读取 JSON 内容
+                    data = await response.json()
+                    return {"status": status, "data": data}
+                else:
+                    # 对于非成功状态码，读取文本内容作为错误信息
+                    error_text = await response.text()
+                    print(f"请求失败: 状态码 {status}, 错误信息: {error_text}")
+                    return {"status": status, "data": {"error": f"HTTP Error {status}"}}
+    
+    except aiohttp.ClientConnectorError as e:
+        # 处理连接错误 (如网络问题，目标地址无法访问)
+        print(f"连接错误: {e}", file=sys.stderr)
+        return {"status": 0, "data": {"error": f"Client Connector Error: {e}"}}
+    except aiohttp.ClientError as e:
+        # 处理其他客户端错误 (如超时)
+        print(f"请求发生其他错误: {e}", file=sys.stderr)
+        return {"status": 0, "data": {"error": f"AIOHTTP Client Error: {e}"}}
+    except Exception as e:
+        # 处理其他意外错误
+        print(f"发生未知错误: {e}", file=sys.stderr)
+        return {"status": -1, "data": {"error": f"Unknown Error: {e}"}}
+
+# -----------------
+# 异步 POST 请求封装
+# -----------------
+
+async def async_http_post(url: str, json: Dict[str, Any] = None, headers: Dict[str, Any] = None, timeout: int = 30) -> Dict[str, Any]:
+    """
+    封装的异步 HTTP POST 请求函数。
+    
+    参数:
+        url (str): 目标 URL。
+        data (Dict[str, Any], optional): 要作为 JSON 提交的数据。默认为 None。
+        
+    返回:
+        Dict[str, Any]: 包含 'status' (int) 和 'data' (Any) 的字典。
+    """
+    try:
+
+        # 创建 ClientTimeout 对象，设置总超时时间
+        timeout = ClientTimeout(total=timeout)
+        
+        # 使用 aiohttp.ClientSession 启动一个客户端会话
+        async with aiohttp.ClientSession() as session:
+            # 使用 json 参数直接发送 JSON 格式的数据
+            async with session.post(url, json=json, headers=headers, timeout=timeout) as response:
+                status = response.status
+                
+                if 200 <= status < 300:
+                    # 如果响应是 JSON 格式，则异步读取 JSON 内容
+                    data = await response.json()
+                    return {"status": status, "data": data}
+                else:
+                    # 对于非成功状态码，读取文本内容作为错误信息
+                    error_text = await response.text()
+                    # print(f"请求失败: 状态码 {status}, 错误信息: {error_text}")
+                    return {"status": status, "data": {"error": f"HTTP Error {status}"}}
+
+    except aiohttp.ClientConnectorError as e:
+        # print(f"连接错误: {e}", file=sys.stderr)
+        return {"status": 0, "data": {"error": f"Client Connector Error: {e}"}}
+    except aiohttp.ClientError as e:
+        # print(f"请求发生其他错误: {e}", file=sys.stderr)
+        return {"status": 0, "data": {"error": f"AIOHTTP Client Error: {e}"}}
+    except Exception as e:
+        # print(f"发生未知错误: {e}", file=sys.stderr)
+        return {"status": -1, "data": {"error": f"Unknown Error: {e}"}}
+
+# -----------------
+# 异步请求使用示例
+# -----------------
+async def test1():
+    print("--- 启动异步请求 (主协程开始执行) ---")
+    
+    # 示例 URL，使用一个公共的测试 API
+    test_url = "https://jsonplaceholder.typicode.com/todos/1"
+    
+    # 1. 创建一个异步任务 (Task)
+    # 这将启动请求，但不会阻塞 main 函数。
+    # Python 运行时会切换到其他任务，主进程可以继续执行后续代码。
+    task = asyncio.create_task(
+        async_http_get(test_url)
+    )
+    
+    print("\n[主进程] 请求已发送，但主协程并未阻塞，可以继续执行其他代码...")
+    print("[主进程] 正在执行一些 CPU 密集型或 I/O 任务...")
+    
+    # 模拟主进程执行其他操作，非阻塞
+    await asyncio.sleep(1) 
+    print("[主进程] 其他操作已完成，准备等待请求结果...")
+    
+    # 2. 等待任务完成
+    # 只有当执行到 await task 时，如果请求尚未完成，main 函数才会被挂起，等待结果。
+    result = await task
+    
+    print("\n--- 异步请求结果 ---")
+    if result["status"] == 200:
+        print("请求成功！")
+        print(f"状态码: {result['status']}")
+        print(f"返回数据:\n{result['data']}")
+    else:
+        print("请求失败！")
+        print(f"结果: {result}")
+    
+    print("\n--- 主协程执行完毕 ---")
+
+# -----------------
+# 异步大模型接口使用示例
+# -----------------
+async def test2():
+    img64 = file2base64('fire.png')
+    sess = Session(version='2.5', port=40001)
+    task = asyncio.create_task(
+        sess.Text('图片中有没有发现烟火', img64, temperature=0.1)
+    )
+    while True:
+        if task.done():
+            result = await task
+            print("\n--- 异步请求结果 ---")
+            if result["status"] == 200:
+                print("请求成功！")
+                print(f"状态码: {result['status']}")
+                print(f"返回数据:\n{result['data']}")
+            else:
+                print("请求失败！")
+                print(f"结果: {result}")
+            break
+        else:
+            print("任务尚未完成，等待其完成...")
+            await asyncio.sleep(2)
+
+# -----------------
+# 定义一个大模型题词,并使用回调的方式来调用
+# -----------------
+async def test_vl25(i, filepath):
+    print(f"INFO：{filepath} start", file=sys.stderr)
+    img64 = file2base64(filepath)
+    sess = Session(version='2.5', port=40001)
+    v = await sess.Text('图片中有没有发现烟火', img64, temperature=0.1)
+    print(v)
+    return
+
+async def test3():
+    env = Env()
+    while True:
+        if env.done():
+            env.create_task(
+                test_vl22(0, 'fire_small.jpg')
+            )
+        else:
+            print('env task is busy.')
+        await asyncio.sleep(2)
+
+async def test_vl22(i, filepath):
+    print(f"INFO：{filepath} start", file=sys.stderr)
+    img64 = file2base64(filepath)
+    sess = Session(version='2.2', port=7005)
+    v = await sess.Text('图片中有没有发现烟火', img64, temperature=0.1)
+    print(v)
+    return
+    
+if __name__ == '__main__':
+    asyncio.run(test3())

@@ -1,0 +1,192 @@
+import aiohttp
+import asyncio
+import base64
+import cv2
+import numpy as np
+from tracker import Tracker
+import logging
+
+
+logger = logging.getLogger(__name__)
+
+class Scene:
+    def __init__(self, track_url='', detect_url='', fire_url=''):
+        """
+        初始化 Scene 类，兼容原来 Env 中的调用
+        """
+        self.track_url = track_url
+        self.detect_url = detect_url
+        self.fire_url = fire_url
+
+        # 初始化 Tracker
+        self._tracker = Tracker(self.track_url)
+
+        # 配置参数（会被 configure_params 覆盖）
+        self.stream_opt = {}
+        self.enabled = {}
+        self.roi = []
+
+        # 置信度参数
+        self.person_conf = 0.5
+        self.fire_conf = 0.8
+        self.swimmer_conf = 0.6
+        self.water_leak_conf = 0.5
+        self.oil_leak_conf = 0.5
+        self.spark_conf = 0.6
+        self.floating_debris_conf = 0.5
+        
+    def configure_params(self, yolo_config):
+        """
+        接收 Env 传入的配置，兼容原来的调用
+        """
+        if not yolo_config:
+            return
+
+        self.stream_opt = yolo_config.get("StreamOpt", {})
+        self.enabled = yolo_config.get("Enabled", {})
+        self.roi = yolo_config.get("ROI", [])       # 需传入归一化坐标
+
+        # 读取置信度
+        stream_opt = self.stream_opt
+        self.person_conf = stream_opt.get("PersonConf", 0.5)
+        self.fire_conf = stream_opt.get("FireConf", 0.8)
+        self.swimmer_conf = stream_opt.get("SwimmerConf", 0.6)
+        self.water_leak_conf = stream_opt.get("WaterLeakConf", 0.5)
+        self.oil_leak_conf = stream_opt.get("OilLeakConf", 0.5)
+        self.spark_conf = stream_opt.get("SparkConf", 0.6)
+        self.floating_debris_conf = stream_opt.get("floating_debris", 0.5)
+
+    # ----------------------
+    # 工具：图片转 base64
+    # ----------------------
+    def image_to_base64(self, image_path):
+        with open(image_path, "rb") as f:
+            return base64.b64encode(f.read()).decode("utf-8")
+
+    # ----------------------
+    # 画框保存
+    # ----------------------
+    def draw_boxes(self, image_path, results):
+        img = cv2.imread(image_path)
+        h, w = img.shape[:2]
+        for obj in results:
+            class_name = obj.get("class_name", "unknown")
+            conf = obj.get("confidence", 0)
+            bbox = obj.get("bbox", [])
+            if len(bbox) != 4:
+                continue
+            x1 = int(bbox[0] * w)
+            y1 = int(bbox[1] * h)
+            x2 = int(bbox[2] * w)
+            y2 = int(bbox[3] * h)
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(img, f"{class_name} {conf:.2f}", (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        cv2.imwrite("detect_result.jpg", img)
+
+    # ----------------------
+    # ROI 判断
+    # ----------------------
+    def is_bbox_in_roi(self, bbox, roi):
+        if not roi:
+            return True
+        cx = (bbox[0] + bbox[2]) / 2
+        cy = (bbox[1] + bbox[3]) / 2
+        for poly in roi:
+            pts = np.array([[p["x"], p["y"]] for p in poly], dtype=np.float32)
+            if cv2.pointPolygonTest(pts, (cx, cy), False) >= 0:
+                return True
+        return False
+
+    def filter_results_by_roi(self, results, roi):
+        if not roi:
+            return results
+        return [o for o in results if len(o.get("bbox", [])) == 4 and self.is_bbox_in_roi(o["bbox"], roi)]
+
+    # ----------------------
+    # 检测判断函数（带置信度）
+    # ----------------------
+    def detect_smoke(self, results):
+        return any(obj.get("class_name") == "smoke" and obj.get("confidence", 0) > self.fire_conf for obj in results)
+
+    def detect_swimming(self, results):
+        return any(obj.get("class_name") == "person" and obj.get("confidence", 0) > self.swimmer_conf for obj in results)
+
+    def detect_leak_water(self, results):
+        return any(obj.get("class_name") == "water_leak" and obj.get("confidence", 0) > self.water_leak_conf for obj in results)
+
+    def detect_leak_oil(self, results):
+        return any(obj.get("class_name") == "oil_leak" and obj.get("confidence", 0) > self.oil_leak_conf for obj in results)
+
+    def detect_fire(self, results):
+        return any(obj.get("class_name") == "fire" and obj.get("confidence", 0) > self.fire_conf for obj in results)
+
+    def detect_spark(self, results):
+        return any(obj.get("class_name") == "spark" and obj.get("confidence", 0) > self.spark_conf for obj in results)
+
+    def detect_trespass(self, results):
+        return any(obj.get("class_name") == "person" and obj.get("confidence", 0) > self.person_conf for obj in results)
+
+    def detect_floating_debris(self, results):
+        return any(obj.get("class_name") == "floating_debris" and obj.get("confidence", 0) > self.floating_debris_conf for obj in results)
+
+    # ----------------------
+    # 异步检测主入口（给 Env 调用）
+    # ----------------------
+    async def detect_run(self, **kwargs):
+        frame = kwargs.get('frame')
+        roi = kwargs.get('roi')
+        enable_raw = kwargs.get('enable', {})
+        enable = {}
+        for k, v in enable_raw.items():
+            if k.startswith('S'):
+                enable[k[1:]] = v
+            else:
+                enable[k] = v
+        slice_str = self.stream_opt.get("Slice", "2,2,0.2,0.2")
+        logger.info(f"============================================")
+        logger.info(f"roi:{roi}")
+        logger.info(f"enable:{enable}")
+        logger.info(f"slice_str:{slice_str}")
+        logger.info(f"roi:{roi}")
+
+        payload = {
+            "image": frame.dict()["image"],
+            "conf": 0.05,
+            "slice_params": list(map(float, slice_str.split(",")))
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(self.detect_url, json=payload, timeout=20) as resp:
+                resp.raise_for_status()
+                result = await resp.json()
+
+        results = result.get("results", [])
+        results = self.filter_results_by_roi(results, roi)
+        events = set()
+
+        # 告警判断
+        if enable.get("浓烟") and self.detect_smoke(results):
+            events.add("浓烟")
+        if enable.get("游泳") and self.detect_swimming(results):
+            events.add("游泳")
+        if enable.get("漏水") and self.detect_leak_water(results):
+            events.add("漏水")
+        if enable.get("漏油") and self.detect_leak_oil(results):
+            events.add("漏油")
+        if enable.get("火焰") and self.detect_fire(results):
+            events.add("火焰")
+        if enable.get("火花") and self.detect_spark(results):
+            events.add("火花")
+        if enable.get("人员闯入") and self.detect_trespass(results):
+            events.add("人员闯入")
+        if enable.get("漂浮物") and self.detect_floating_debris(results):
+            events.add("漂浮物")
+
+        return events, results
+
+    async def track_run(self, **kwargs):
+        """
+        占位：跟踪接口，你原来 Env 里有调用，这里保持接口一致
+        """
+        return set(),[]
