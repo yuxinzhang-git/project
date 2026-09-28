@@ -71,15 +71,15 @@ function renderPlans(plans) {
       <div class="item-head"><div><div class="item-title">${esc(plan.title)}</div><div class="item-meta"><span>建议售价：${money(plan.suggested_price)}</span><span>预计成本：${money(plan.estimated_cost)}</span></div></div><span class="tag blue">方案 ${index + 1}</span></div>
       <div class="item-body">${esc(plan.fit_reason)}</div>
       <div class="plan-grid">
-        <div class="plan-block"><label>目标客户</label>${listItems(plan.target_customers)}</div>
-        <div class="plan-block"><label>产品/服务</label><div class="item-body">${esc(plan.offer)}</div></div>
-        <div class="plan-block"><label>准备过程</label>${listItems(plan.preparation_steps)}</div>
-        <div class="plan-block"><label>7 天执行计划</label>${listItems(plan.seven_day_plan)}</div>
-        <div class="plan-block"><label>获客方式</label>${listItems(plan.customer_acquisition)}</div>
-        <div class="plan-block"><label>风险挑战</label>${listItems(plan.risks)}</div>
-        <div class="plan-block"><label>验证标准</label>${listItems(plan.validation_metrics)}</div>
-        <div class="plan-block"><label>第一步行动</label><div class="item-body">${esc(plan.first_action)}</div></div>
-        <div class="plan-block wide"><label>成本拆分</label><div class="item-body">${esc(plan.cost_breakdown)}</div></div>
+        <div class="plan-block"><span class="plan-block-title">目标客户</span><div class="plan-block-content">${listItems(plan.target_customers)}</div></div>
+        <div class="plan-block"><span class="plan-block-title">产品/服务</span><div class="plan-block-content">${esc(plan.offer)}</div></div>
+        <div class="plan-block"><span class="plan-block-title">准备过程</span><div class="plan-block-content">${listItems(plan.preparation_steps)}</div></div>
+        <div class="plan-block"><span class="plan-block-title">7 天执行计划</span><div class="plan-block-content">${listItems(plan.seven_day_plan)}</div></div>
+        <div class="plan-block"><span class="plan-block-title">获客方式</span><div class="plan-block-content">${listItems(plan.customer_acquisition)}</div></div>
+        <div class="plan-block"><span class="plan-block-title">风险挑战</span><div class="plan-block-content">${listItems(plan.risks)}</div></div>
+        <div class="plan-block"><span class="plan-block-title">验证标准</span><div class="plan-block-content">${listItems(plan.validation_metrics)}</div></div>
+        <div class="plan-block plan-block--action"><span class="plan-block-title">第一步行动</span><div class="plan-block-content">${esc(plan.first_action)}</div></div>
+        <div class="plan-block plan-block--cost wide"><span class="plan-block-title">成本拆分</span><div class="plan-block-content">${esc(plan.cost_breakdown)}</div></div>
       </div>
       <div class="plan-actions"><button class="btn secondary" type="button" data-save-plan="${index}">保存为想法</button></div>
     </article>`).join("") : '<div class="empty">没有生成可用方案</div>';

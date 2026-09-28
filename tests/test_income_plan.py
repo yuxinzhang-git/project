@@ -111,6 +111,24 @@ class IncomePlanApiTests(unittest.IsolatedAsyncioTestCase):
 
 
 class IncomePlanFrontendTests(unittest.TestCase):
+    def test_money_page_uses_vertical_income_plan_layout(self):
+        page = Path(__file__).parents[1] / "frontend" / "money.html"
+        source = page.read_text(encoding="utf-8")
+
+        self.assertIn('plan-layout', source)
+        self.assertIn("plan-form-panel", source)
+        self.assertIn("plan-results-panel", source)
+        self.assertIn('.plan-card .item-head>div{min-width:0}', source)
+        self.assertIn('.plan-card .item-title,.plan-block-content{overflow-wrap:anywhere}', source)
+        self.assertIn('.plan-card .item-body{line-height:1.7;overflow-wrap:anywhere}', source)
+
+    def test_money_js_marks_plan_result_sections_for_emphasis(self):
+        script = Path(__file__).parents[1] / "frontend" / "money.js"
+        source = script.read_text(encoding="utf-8")
+
+        self.assertIn("plan-block-title", source)
+        self.assertIn("plan-block-content", source)
+
     def test_money_page_exposes_income_plan_tab_and_inputs(self):
         page = Path(__file__).parents[1] / "frontend" / "money.html"
         source = page.read_text(encoding="utf-8")
