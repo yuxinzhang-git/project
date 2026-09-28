@@ -1,0 +1,4 @@
+[mcp_servers.playwright]
+command = "F:\\zyx\\agent\\my-agent\\.tools\\node\\node.exe"
+args = ["F:\\zyx\\agent\\my-agent\\node_modules\\@playwright\\mcp\\cli.js", "--browser", "msedge", "--headless"]
+startup_timeout_sec = 30
